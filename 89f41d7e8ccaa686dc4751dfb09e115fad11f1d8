@@ -1,0 +1,26 @@
+thirdparty/github/README.md
+  43fd7c6603f90671 1-22
+.gitmodules
+  43fd7c6603f90671 1-6
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "89f41d7e8ccaa686dc4751dfb09e115fad11f1d8",
+  "prompts": {
+    "43fd7c6603f90671": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019d542e-efe9-73e1-b4b0-d21708ded6bd",
+        "model": "gpt-5.4"
+      },
+      "human_author": "Frank Wang",
+      "messages": [],
+      "total_additions": 28,
+      "total_deletions": 0,
+      "accepted_lines": 28,
+      "overriden_lines": 0,
+      "messages_url": "https://usegitai.com/cas/4afce415c4f6940b47a780058a3ea1d636041efab391b97b6fc589cca50c85f5"
+    }
+  }
+}
