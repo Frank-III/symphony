@@ -1,0 +1,39 @@
+elixir/WORKFLOW.md
+  87322cbc57399083 4,33,41-42,140
+  43fd7c6603f90671 5,31,34,122-139
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "d2b09bbb9fef0d8cd8c262921df0a2e6aba63a2e",
+  "prompts": {
+    "43fd7c6603f90671": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019d542e-efe9-73e1-b4b0-d21708ded6bd",
+        "model": "gpt-5.4"
+      },
+      "human_author": "Frank Wang",
+      "messages": [],
+      "total_additions": 25,
+      "total_deletions": 2,
+      "accepted_lines": 25,
+      "overriden_lines": 0,
+      "messages_url": "https://usegitai.com/cas/f5152077fc8136b2d34b8fbfea6c90a16181012429ba7ba06a1433ae120dd204"
+    },
+    "87322cbc57399083": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019d5569-7d53-77b0-a33f-c0691bb82752",
+        "model": "gpt-5.4"
+      },
+      "human_author": "Frank Wang",
+      "messages": [],
+      "total_additions": 5,
+      "total_deletions": 1,
+      "accepted_lines": 5,
+      "overriden_lines": 0,
+      "messages_url": "https://usegitai.com/cas/955edaff4956e35d85f68f8cb7007d73b37537ade522cc864c2f0d34cfc66425"
+    }
+  }
+}
