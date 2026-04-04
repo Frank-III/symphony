@@ -43,45 +43,60 @@ defmodule SymphonyElixir.Orchestration do
 
   # --- Artifact validation ---
 
+  @proposal_required_keys ~w(summary tasks)
+  @plan_required_keys ~w(version cycle tasks next_task_id selected_proposals)
+  @judge_required_keys ~w(decision)
+  @judge_linear_key "linear_tool_usage"
+
   @spec validate_proposal(Path.t()) :: {:ok, map()} | {:error, term()}
   def validate_proposal(path) do
-    with {:ok, content} <- File.read(path),
-         {:ok, decoded} <- Jason.decode(content) do
-      if is_map(decoded) and Map.has_key?(decoded, "summary") do
-        {:ok, decoded}
-      else
-        {:error, {:invalid_proposal, path, :missing_summary}}
-      end
-    else
-      {:error, reason} -> {:error, {:artifact_read_failed, path, reason}}
+    with {:ok, decoded} <- read_json_artifact(path),
+         :ok <- require_keys(decoded, @proposal_required_keys, {:invalid_proposal, path}) do
+      {:ok, decoded}
     end
   end
 
   @spec validate_plan(Path.t()) :: {:ok, map()} | {:error, term()}
   def validate_plan(path) do
-    with {:ok, content} <- File.read(path),
-         {:ok, decoded} <- Jason.decode(content) do
-      if is_map(decoded) and Map.has_key?(decoded, "tasks") do
-        {:ok, decoded}
-      else
-        {:error, {:invalid_plan, path, :missing_tasks}}
-      end
-    else
-      {:error, reason} -> {:error, {:artifact_read_failed, path, reason}}
+    with {:ok, decoded} <- read_json_artifact(path),
+         :ok <- require_keys(decoded, @plan_required_keys, {:invalid_plan, path}) do
+      {:ok, decoded}
     end
   end
 
   @spec validate_judge(Path.t()) :: {:ok, map()} | {:error, term()}
   def validate_judge(path) do
+    with {:ok, decoded} <- read_json_artifact(path),
+         :ok <- require_keys(decoded, @judge_required_keys, {:invalid_judge, path}) do
+      {:ok, decoded}
+    end
+  end
+
+  @spec validate_judge_linear_evidence(map()) :: :ok | {:error, :missing_linear_evidence}
+  def validate_judge_linear_evidence(judge) do
+    case Map.get(judge, @judge_linear_key, []) do
+      evidence when is_list(evidence) and length(evidence) > 0 -> :ok
+      _ -> {:error, :missing_linear_evidence}
+    end
+  end
+
+  defp read_json_artifact(path) do
     with {:ok, content} <- File.read(path),
-         {:ok, decoded} <- Jason.decode(content) do
-      if is_map(decoded) and Map.has_key?(decoded, "decision") do
-        {:ok, decoded}
-      else
-        {:error, {:invalid_judge, path, :missing_decision}}
-      end
+         {:ok, decoded} when is_map(decoded) <- Jason.decode(content) do
+      {:ok, decoded}
     else
+      {:ok, _not_map} -> {:error, {:artifact_not_object, path}}
       {:error, reason} -> {:error, {:artifact_read_failed, path, reason}}
+    end
+  end
+
+  defp require_keys(map, keys, error_prefix) do
+    missing = Enum.reject(keys, &Map.has_key?(map, &1))
+
+    if missing == [] do
+      :ok
+    else
+      {:error, Tuple.insert_at(error_prefix, tuple_size(error_prefix), {:missing_keys, missing})}
     end
   end
 
@@ -168,26 +183,35 @@ defmodule SymphonyElixir.Orchestration do
     """
   end
 
+  @phase_default_runtimes %{
+    brainstorm: "codex",
+    arbiter: "codex",
+    worker: "claude",
+    judge: "claude"
+  }
+
   @spec runtime_for_phase(phase()) :: String.t()
-  def runtime_for_phase(:brainstorm), do: "codex"
-  def runtime_for_phase(:arbiter), do: "codex"
-  def runtime_for_phase(:worker), do: runtime_override(:worker, "claude")
-  def runtime_for_phase(:judge), do: runtime_override(:judge, "claude")
+  def runtime_for_phase(phase) when phase in @phases do
+    settings = Config.settings!().orchestration
+    role_key = to_string(phase)
 
-  defp runtime_override(role, default) do
-    case Config.settings!().orchestration.role_overrides do
-      %{} = overrides ->
-        role_key = to_string(role)
-
+    case settings.role_overrides do
+      %{} = overrides when map_size(overrides) > 0 ->
         case Map.get(overrides, role_key) do
           %{"runtime" => runtime} when is_binary(runtime) -> runtime
-          _ -> default
+          _ -> phase_default(phase, settings.primary_agent_runtime)
         end
 
       _ ->
-        default
+        phase_default(phase, settings.primary_agent_runtime)
     end
   end
+
+  # Worker and judge use the configured primary_agent_runtime;
+  # brainstorm and arbiter keep their static defaults.
+  defp phase_default(:worker, primary_runtime), do: primary_runtime
+  defp phase_default(:judge, primary_runtime), do: primary_runtime
+  defp phase_default(phase, _primary_runtime), do: Map.fetch!(@phase_default_runtimes, phase)
 
   defp artifact_dir do
     Config.orchestration_artifact_dir()

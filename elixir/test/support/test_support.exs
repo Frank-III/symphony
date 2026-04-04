@@ -129,6 +129,8 @@ defmodule SymphonyElixir.TestSupport do
           orchestration_artifact_dir: nil,
           orchestration_primary_agent_runtime: nil,
           orchestration_role_overrides: nil,
+          orchestration_cycle: nil,
+          orchestration_max_cycles: nil,
           prompt: @workflow_prompt
         ],
         overrides
@@ -171,6 +173,8 @@ defmodule SymphonyElixir.TestSupport do
     orchestration_artifact_dir = Keyword.get(config, :orchestration_artifact_dir)
     orchestration_primary_agent_runtime = Keyword.get(config, :orchestration_primary_agent_runtime)
     orchestration_role_overrides = Keyword.get(config, :orchestration_role_overrides)
+    orchestration_cycle = Keyword.get(config, :orchestration_cycle)
+    orchestration_max_cycles = Keyword.get(config, :orchestration_max_cycles)
     prompt = Keyword.get(config, :prompt)
 
     sections =
@@ -210,7 +214,9 @@ defmodule SymphonyElixir.TestSupport do
           orchestration_planner_count,
           orchestration_artifact_dir,
           orchestration_primary_agent_runtime,
-          orchestration_role_overrides
+          orchestration_role_overrides,
+          orchestration_cycle,
+          orchestration_max_cycles
         ),
         "---",
         prompt
@@ -294,16 +300,18 @@ defmodule SymphonyElixir.TestSupport do
     |> Enum.join("\n")
   end
 
-  defp orchestration_yaml(nil, nil, nil, nil, nil), do: nil
+  defp orchestration_yaml(nil, nil, nil, nil, nil, nil, nil), do: nil
 
-  defp orchestration_yaml(mode, planner_count, artifact_dir, primary_agent_runtime, role_overrides) do
+  defp orchestration_yaml(mode, planner_count, artifact_dir, primary_agent_runtime, role_overrides, cycle, max_cycles) do
     [
       "orchestration:",
       mode && "  mode: #{yaml_value(mode)}",
       planner_count && "  planner_count: #{yaml_value(planner_count)}",
       artifact_dir && "  artifact_dir: #{yaml_value(artifact_dir)}",
       primary_agent_runtime && "  primary_agent_runtime: #{yaml_value(primary_agent_runtime)}",
-      role_overrides && "  role_overrides: #{yaml_value(role_overrides)}"
+      role_overrides && "  role_overrides: #{yaml_value(role_overrides)}",
+      cycle && "  cycle: #{yaml_value(cycle)}",
+      max_cycles && "  max_cycles: #{yaml_value(max_cycles)}"
     ]
     |> Enum.reject(&is_nil/1)
     |> Enum.join("\n")

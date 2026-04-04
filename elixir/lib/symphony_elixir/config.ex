@@ -103,6 +103,21 @@ defmodule SymphonyElixir.Config do
     settings!().orchestration.artifact_dir
   end
 
+  @spec orchestration_cycle() :: pos_integer()
+  def orchestration_cycle do
+    settings!().orchestration.cycle
+  end
+
+  @spec orchestration_max_cycles() :: pos_integer()
+  def orchestration_max_cycles do
+    settings!().orchestration.max_cycles
+  end
+
+  @spec primary_agent_runtime() :: String.t()
+  def primary_agent_runtime do
+    settings!().orchestration.primary_agent_runtime
+  end
+
   @spec server_port() :: non_neg_integer() | nil
   def server_port do
     case Application.get_env(:symphony_elixir, :server_port_override) do

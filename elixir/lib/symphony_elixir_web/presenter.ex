@@ -83,7 +83,10 @@ defmodule SymphonyElixirWeb.Presenter do
       tracked: %{},
       orchestration_mode: running && Map.get(running, :orchestration_mode),
       current_phase: running && phase_to_string(Map.get(running, :current_phase)),
-      phase_history: (running && format_phase_history(Map.get(running, :phase_history, []))) || []
+      phase_history: (running && format_phase_history(Map.get(running, :phase_history, []))) || [],
+      cycle: running && Map.get(running, :cycle),
+      max_cycles: running && Map.get(running, :max_cycles),
+      judge_decision: running && Map.get(running, :judge_decision)
     }
   end
 
@@ -118,7 +121,10 @@ defmodule SymphonyElixirWeb.Presenter do
       },
       orchestration_mode: Map.get(entry, :orchestration_mode),
       current_phase: phase_to_string(Map.get(entry, :current_phase)),
-      phase_history: format_phase_history(Map.get(entry, :phase_history, []))
+      phase_history: format_phase_history(Map.get(entry, :phase_history, [])),
+      cycle: Map.get(entry, :cycle),
+      max_cycles: Map.get(entry, :max_cycles),
+      judge_decision: Map.get(entry, :judge_decision)
     }
   end
 
@@ -212,6 +218,7 @@ defmodule SymphonyElixirWeb.Presenter do
     Enum.map(entries, fn entry ->
       %{
         phase: phase_to_string(Map.get(entry, :phase)),
+        runtime: Map.get(entry, :runtime),
         started_at: iso8601(Map.get(entry, :started_at)),
         completed_at: iso8601(Map.get(entry, :completed_at)),
         status: to_string(Map.get(entry, :status))

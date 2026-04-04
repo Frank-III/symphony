@@ -254,6 +254,8 @@ defmodule SymphonyElixir.Config.Schema do
       field(:artifact_dir, :string, default: ".symphony/orchestration")
       field(:primary_agent_runtime, :string, default: "codex")
       field(:role_overrides, :map, default: %{})
+      field(:cycle, :integer, default: 1)
+      field(:max_cycles, :integer, default: 20)
     end
 
     @valid_modes ~w(single brainstorm_arbiter_worker_judge)
@@ -262,12 +264,16 @@ defmodule SymphonyElixir.Config.Schema do
     @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
     def changeset(schema, attrs) do
       schema
-      |> cast(attrs, [:mode, :planner_count, :artifact_dir, :primary_agent_runtime, :role_overrides],
+      |> cast(
+        attrs,
+        [:mode, :planner_count, :artifact_dir, :primary_agent_runtime, :role_overrides, :cycle, :max_cycles],
         empty_values: []
       )
       |> validate_inclusion(:mode, @valid_modes)
       |> validate_number(:planner_count, greater_than_or_equal_to: 2)
       |> validate_inclusion(:primary_agent_runtime, @valid_runtimes)
+      |> validate_number(:cycle, greater_than_or_equal_to: 1)
+      |> validate_number(:max_cycles, greater_than_or_equal_to: 1)
     end
   end
 

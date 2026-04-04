@@ -166,6 +166,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
                     <td>
                       <%= if entry.orchestration_mode && entry.orchestration_mode != "single" do %>
                         <span class="phase-indicator"><%= format_phase_progress(entry) %></span>
+                        <%= if entry[:cycle] do %>
+                          <span class="muted"> cycle <%= entry.cycle %>/<%= entry[:max_cycles] || "?" %></span>
+                        <% end %>
                       <% else %>
                         <span class="muted">single</span>
                       <% end %>

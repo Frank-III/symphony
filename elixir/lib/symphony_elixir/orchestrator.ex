@@ -203,7 +203,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   def handle_info({:codex_worker_update, _issue_id, _update}, state), do: {:noreply, state}
 
-  def handle_info({:pipeline_progress, issue_id, {:phase_started, phase}}, %{running: running} = state)
+  def handle_info({:pipeline_progress, issue_id, {:phase_started, phase, _cycle}}, %{running: running} = state)
       when is_binary(issue_id) do
     case Map.get(running, issue_id) do
       nil ->
@@ -227,7 +227,7 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  def handle_info({:pipeline_progress, issue_id, {:phase_completed, phase}}, %{running: running} = state)
+  def handle_info({:pipeline_progress, issue_id, {:phase_completed, phase, _cycle}}, %{running: running} = state)
       when is_binary(issue_id) do
     case Map.get(running, issue_id) do
       nil ->

@@ -51,11 +51,34 @@ defmodule SymphonyElixir.OrchestrationTest do
       assert msg =~ "planner_count"
     end
 
+    test "defaults cycle and max_cycles" do
+      settings = Config.settings!()
+      assert settings.orchestration.cycle == 1
+      assert settings.orchestration.max_cycles == 20
+    end
+
+    test "parses custom cycle and max_cycles" do
+      workflow_file = Workflow.workflow_file_path()
+
+      write_workflow_file!(workflow_file,
+        orchestration_mode: "brainstorm_arbiter_worker_judge",
+        orchestration_cycle: 3,
+        orchestration_max_cycles: 10
+      )
+
+      settings = Config.settings!()
+      assert settings.orchestration.cycle == 3
+      assert settings.orchestration.max_cycles == 10
+    end
+
     test "config convenience getters work" do
       assert Config.orchestration_mode() == "single"
       refute Config.brainstorm_mode?()
       assert Config.planner_count() == 2
       assert Config.orchestration_artifact_dir() == ".symphony/orchestration"
+      assert Config.orchestration_cycle() == 1
+      assert Config.orchestration_max_cycles() == 20
+      assert Config.primary_agent_runtime() == "codex"
     end
 
     test "brainstorm_mode? returns true for brainstorm mode" do
@@ -114,7 +137,6 @@ defmodule SymphonyElixir.OrchestrationTest do
       path = Orchestration.proposal_path(workspace, 1)
 
       File.write!(path, Jason.encode!(%{
-        "version" => 1,
         "summary" => "Test proposal",
         "tasks" => []
       }))
@@ -125,10 +147,12 @@ defmodule SymphonyElixir.OrchestrationTest do
 
     test "validate_proposal rejects missing summary", %{workspace: workspace} do
       path = Orchestration.proposal_path(workspace, 1)
-      File.write!(path, Jason.encode!(%{"tasks" => []}))
+      File.write!(path, Jason.encode!(%{"version" => 1}))
 
-      assert {:error, {:invalid_proposal, ^path, :missing_summary}} =
+      assert {:error, {:invalid_proposal, ^path, {:missing_keys, missing}}} =
                Orchestration.validate_proposal(path)
+
+      assert "summary" in missing
     end
 
     test "validate_plan accepts valid plan", %{workspace: workspace} do
@@ -136,20 +160,24 @@ defmodule SymphonyElixir.OrchestrationTest do
 
       File.write!(path, Jason.encode!(%{
         "version" => 1,
+        "cycle" => 1,
         "tasks" => [%{"id" => "T1", "title" => "Task 1"}],
-        "next_task_id" => "T1"
+        "next_task_id" => "T1",
+        "selected_proposals" => [1, 2]
       }))
 
       assert {:ok, plan} = Orchestration.validate_plan(path)
       assert length(plan["tasks"]) == 1
     end
 
-    test "validate_plan rejects missing tasks", %{workspace: workspace} do
+    test "validate_plan rejects missing required keys", %{workspace: workspace} do
       path = Orchestration.plan_path(workspace)
       File.write!(path, Jason.encode!(%{"summary" => "No tasks"}))
 
-      assert {:error, {:invalid_plan, ^path, :missing_tasks}} =
+      assert {:error, {:invalid_plan, ^path, {:missing_keys, missing}}} =
                Orchestration.validate_plan(path)
+
+      assert "tasks" in missing
     end
 
     test "validate_judge accepts valid judge artifact", %{workspace: workspace} do
@@ -169,8 +197,10 @@ defmodule SymphonyElixir.OrchestrationTest do
       path = Orchestration.judge_path(workspace)
       File.write!(path, Jason.encode!(%{"rationale" => "No decision"}))
 
-      assert {:error, {:invalid_judge, ^path, :missing_decision}} =
+      assert {:error, {:invalid_judge, ^path, {:missing_keys, missing}}} =
                Orchestration.validate_judge(path)
+
+      assert "decision" in missing
     end
 
     test "list_proposals returns sorted proposal files", %{workspace: workspace} do
@@ -185,6 +215,58 @@ defmodule SymphonyElixir.OrchestrationTest do
 
     test "list_proposals returns empty for missing directory" do
       assert Orchestration.list_proposals("/nonexistent/path") == []
+    end
+
+    test "validate_judge_linear_evidence accepts judge with linear usage" do
+      judge = %{"decision" => "accept", "linear_tool_usage" => [%{"query" => "q"}]}
+      assert :ok = Orchestration.validate_judge_linear_evidence(judge)
+    end
+
+    test "validate_judge_linear_evidence rejects empty linear usage" do
+      judge = %{"decision" => "accept", "linear_tool_usage" => []}
+      assert {:error, :missing_linear_evidence} = Orchestration.validate_judge_linear_evidence(judge)
+    end
+
+    test "validate_judge_linear_evidence rejects missing linear usage" do
+      judge = %{"decision" => "accept"}
+      assert {:error, :missing_linear_evidence} = Orchestration.validate_judge_linear_evidence(judge)
+    end
+
+    test "validate_proposal rejects missing tasks", %{workspace: workspace} do
+      path = Orchestration.proposal_path(workspace, 1)
+      File.write!(path, Jason.encode!(%{"summary" => "No tasks"}))
+
+      assert {:error, {:invalid_proposal, ^path, {:missing_keys, missing}}} =
+               Orchestration.validate_proposal(path)
+
+      assert "tasks" in missing
+    end
+
+    test "validate_plan rejects missing version/cycle/next_task_id/selected_proposals", %{workspace: workspace} do
+      path = Orchestration.plan_path(workspace)
+      File.write!(path, Jason.encode!(%{"tasks" => []}))
+
+      assert {:error, {:invalid_plan, ^path, {:missing_keys, missing}}} =
+               Orchestration.validate_plan(path)
+
+      assert "version" in missing
+      assert "cycle" in missing
+      assert "next_task_id" in missing
+      assert "selected_proposals" in missing
+    end
+
+    test "validate artifacts reject non-JSON files", %{workspace: workspace} do
+      path = Orchestration.plan_path(workspace)
+      File.write!(path, "not json")
+
+      assert {:error, {:artifact_read_failed, ^path, _}} = Orchestration.validate_plan(path)
+    end
+
+    test "validate artifacts reject non-object JSON", %{workspace: workspace} do
+      path = Orchestration.plan_path(workspace)
+      File.write!(path, "[1, 2, 3]")
+
+      assert {:error, {:artifact_not_object, ^path}} = Orchestration.validate_plan(path)
     end
   end
 
@@ -263,12 +345,25 @@ defmodule SymphonyElixir.OrchestrationTest do
       assert Orchestration.runtime_for_phase(:arbiter) == "codex"
     end
 
-    test "worker defaults to claude" do
-      assert Orchestration.runtime_for_phase(:worker) == "claude"
+    test "worker and judge default to primary_agent_runtime (codex)" do
+      # Default primary_agent_runtime is "codex"
+      assert Orchestration.runtime_for_phase(:worker) == "codex"
+      assert Orchestration.runtime_for_phase(:judge) == "codex"
     end
 
-    test "judge defaults to claude" do
+    test "worker and judge use claude when primary_agent_runtime is claude" do
+      workflow_file = Workflow.workflow_file_path()
+
+      write_workflow_file!(workflow_file,
+        orchestration_mode: "brainstorm_arbiter_worker_judge",
+        orchestration_primary_agent_runtime: "claude"
+      )
+
+      assert Orchestration.runtime_for_phase(:worker) == "claude"
       assert Orchestration.runtime_for_phase(:judge) == "claude"
+      # brainstorm/arbiter stay codex regardless
+      assert Orchestration.runtime_for_phase(:brainstorm) == "codex"
+      assert Orchestration.runtime_for_phase(:arbiter) == "codex"
     end
   end
 

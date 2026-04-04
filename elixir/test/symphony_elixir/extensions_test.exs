@@ -359,7 +359,10 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "tokens" => %{"input_tokens" => 4, "output_tokens" => 8, "total_tokens" => 12},
                  "orchestration_mode" => nil,
                  "current_phase" => nil,
-                 "phase_history" => []
+                 "phase_history" => [],
+                 "cycle" => nil,
+                 "max_cycles" => nil,
+                 "judge_decision" => nil
                }
              ],
              "retrying" => [
@@ -413,7 +416,10 @@ defmodule SymphonyElixir.ExtensionsTest do
              "tracked" => %{},
              "orchestration_mode" => nil,
              "current_phase" => nil,
-             "phase_history" => []
+             "phase_history" => [],
+             "cycle" => nil,
+             "max_cycles" => nil,
+             "judge_decision" => nil
            }
 
     conn = get(build_conn(), "/api/v1/MT-RETRY")
