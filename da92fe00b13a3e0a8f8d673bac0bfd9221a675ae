@@ -1,0 +1,46 @@
+elixir/lib/symphony_elixir/agent_runner.ex
+  bfc3bb6c31436cec 8,38-42,53-55
+elixir/README.md
+  bfc3bb6c31436cec 148-188
+elixir/lib/symphony_elixir_web/live/dashboard_live.ex
+  bfc3bb6c31436cec 136,146,167-172,339-357
+elixir/lib/symphony_elixir_web/presenter.ex
+  bfc3bb6c31436cec 83-86,118-121,206-222
+elixir/WORKFLOW.md
+  bfc3bb6c31436cec 37-41
+elixir/lib/symphony_elixir/config.ex
+  bfc3bb6c31436cec 86-105
+elixir/test/symphony_elixir/orchestration_test.exs
+  bfc3bb6c31436cec 1-298
+elixir/test/support/test_support.exs
+  bfc3bb6c31436cec 127-131,169-173,208-214,297-306
+elixir/test/symphony_elixir/extensions_test.exs
+  bfc3bb6c31436cec 359-362,413-416
+elixir/lib/symphony_elixir/config/schema.ex
+  bfc3bb6c31436cec 245-273,303,396
+elixir/lib/symphony_elixir/orchestrator.ex
+  bfc3bb6c31436cec 206-253,771-774,954-959,1184-1187
+elixir/lib/symphony_elixir/orchestration.ex
+  bfc3bb6c31436cec 1-195
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "da92fe00b13a3e0a8f8d673bac0bfd9221a675ae",
+  "prompts": {
+    "bfc3bb6c31436cec": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019d5a8d-6bdf-7e70-9007-5b0b1166eccb",
+        "model": "gpt-5.4"
+      },
+      "human_author": "Frank Wang",
+      "messages": [],
+      "total_additions": 758,
+      "total_deletions": 8,
+      "accepted_lines": 758,
+      "overriden_lines": 0,
+      "messages_url": "https://usegitai.com/cas/528292723a51fb7d738462742fad4cd55e157c6da52608cf00b418b7ba309c75"
+    }
+  }
+}
