@@ -1,0 +1,22 @@
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "a04ad433843045ed5e03afb9996b87dad1e7095a",
+  "prompts": {
+    "87322cbc57399083": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019d5569-7d53-77b0-a33f-c0691bb82752",
+        "model": "gpt-5.4"
+      },
+      "human_author": "Frank Wang",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 1,
+      "overriden_lines": 0,
+      "messages_url": "https://usegitai.com/cas/c5f5dc4288b08cf59ef076a975be543218a71bb56447a366a3035e81f95362d5"
+    }
+  }
+}
