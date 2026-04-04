@@ -83,6 +83,26 @@ defmodule SymphonyElixir.Config do
     end
   end
 
+  @spec orchestration_mode() :: String.t()
+  def orchestration_mode do
+    settings!().orchestration.mode
+  end
+
+  @spec brainstorm_mode?() :: boolean()
+  def brainstorm_mode? do
+    orchestration_mode() == "brainstorm_arbiter_worker_judge"
+  end
+
+  @spec planner_count() :: pos_integer()
+  def planner_count do
+    settings!().orchestration.planner_count
+  end
+
+  @spec orchestration_artifact_dir() :: String.t()
+  def orchestration_artifact_dir do
+    settings!().orchestration.artifact_dir
+  end
+
   @spec server_port() :: non_neg_integer() | nil
   def server_port do
     case Application.get_env(:symphony_elixir, :server_port_override) do

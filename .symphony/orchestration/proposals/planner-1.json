@@ -1,0 +1,45 @@
+{
+  "version": 1,
+  "cycle": 1,
+  "planner_index": 1,
+  "summary": "Implement `brainstorm_arbiter_worker_judge` as a file-backed, resumable orchestration cycle layered onto the current Elixir service, with explicit role prompts, mixed-runtime phase execution, and dashboard/run-API visibility.",
+  "rationale": "The current repository is still single-agent and Codex-only: `elixir/lib/symphony_elixir/agent_runner.ex` drives one `Codex.AppServer` session from a single workflow prompt, `elixir/lib/symphony_elixir/orchestrator.ex` only tracks running/retrying workers, and there is no existing `.symphony/orchestration` handling anywhere in the service. The least risky path is to make orchestration first-class service logic instead of burying role control in prompt text. Use workspace artifacts as the durable source of truth so retries and restarts resume cleanly without introducing a new database, add a thin runtime/backend boundary so brainstorm planners and arbiter can stay on Codex while worker and judge can run Claude, and extend the existing presenter/dashboard/API surfaces with phase-aware run data. Treat the judge phase as stricter than the generic workflow prerequisite: the cycle should fail if Linear MCP is not actually available and used for the final decision.",
+  "tasks": [
+    {
+      "id": "T1",
+      "title": "Define orchestration config and artifact contracts",
+      "status": "pending",
+      "instructions": "Extend `elixir/lib/symphony_elixir/config/schema.ex`, `elixir/lib/symphony_elixir/config.ex`, `elixir/lib/symphony_elixir/workflow.ex`, and `elixir/lib/symphony_elixir/prompt_builder.ex` with explicit orchestration settings instead of overloading the generic worker prompt. Model the mode (`brainstorm_arbiter_worker_judge`), planner count, max cycles, per-role runtime/backend, and canonical artifact paths under `.symphony/orchestration`. Make prompt rendering role-aware so each phase receives issue context plus cycle, role, and artifact metadata."
+    },
+    {
+      "id": "T2",
+      "title": "Build a resumable orchestration cycle engine",
+      "status": "pending",
+      "instructions": "Add a dedicated orchestration layer (for example `elixir/lib/symphony_elixir/orchestration/*.ex`) that owns cycle progression inside the workspace. It should seed proposal files, validate planner JSON outputs, require at least two brainstorm proposals before running the arbiter, require a valid `plan.json` before the worker phase, and require a valid `judge.json` before finishing the cycle. Drive phase advancement from artifact presence and validation so normal continuation turns or service restarts resume the next missing phase instead of restarting the whole issue."
+    },
+    {
+      "id": "T3",
+      "title": "Add mixed-runtime phase execution",
+      "status": "pending",
+      "instructions": "Refactor `elixir/lib/symphony_elixir/agent_runner.ex` behind a thin runtime/backend boundary instead of hard-coding a single Codex path. Keep the existing `elixir/lib/symphony_elixir/codex/app_server.ex` flow for brainstorm planners and arbiter, and add the minimum new backend needed for Claude worker and judge execution. Make the judge phase fail fast unless Linear MCP is available to that runtime, and record enough structured evidence to prove the final decision consulted Linear through MCP instead of silently falling back to `linear_graphql`."
+    },
+    {
+      "id": "T4",
+      "title": "Expose orchestration runs in snapshot, dashboard, and run API",
+      "status": "pending",
+      "instructions": "Extend `elixir/lib/symphony_elixir/orchestrator.ex`, `elixir/lib/symphony_elixir_web/presenter.ex`, `elixir/lib/symphony_elixir_web/controllers/observability_api_controller.ex`, `elixir/lib/symphony_elixir_web/router.ex`, and `elixir/lib/symphony_elixir_web/live/dashboard_live.ex` to surface orchestration metadata. Include current cycle, active role, runtime/backend, artifact completion state, and final judge verdict. Prefer a dedicated run payload or endpoint rather than hiding this in the existing issue-details payload so the acceptance criterion about dashboard and run API visibility is explicit."
+    },
+    {
+      "id": "T5",
+      "title": "Add deterministic orchestration tests and local dogfood coverage",
+      "status": "pending",
+      "instructions": "Cover the feature with explicit tests instead of prompt-only confidence. Add config and prompt tests for role-aware rendering, artifact validator tests, orchestrator integration tests with stub planner, arbiter, worker, and judge binaries, and Phoenix endpoint or LiveView tests proving the run is visible in the dashboard and API. Add a local dogfood scenario under `elixir/test` that exercises two planner proposals, arbiter output, worker execution, and judge decision end-to-end without requiring manual intervention."
+    },
+    {
+      "id": "T6",
+      "title": "Document the repo-owned orchestration contract",
+      "status": "pending",
+      "instructions": "Update `elixir/README.md`, `elixir/WORKFLOW.md`, and any relevant spec docs so repo authors can configure brainstorm orchestration intentionally. Document the artifact JSON schemas, the stricter judge requirement around Linear MCP, the difference between generic tracker access and judge-phase tool requirements, and how operators inspect progress via the dashboard and run API."
+    }
+  ]
+}

@@ -1,0 +1,69 @@
+{
+  "version": 1,
+  "cycle": 1,
+  "planner_index": 2,
+  "summary": "Add multi-phase orchestration mode (brainstorm/arbiter/worker/judge) to Symphony by extending the orchestrator with a phase-aware dispatch pipeline, multi-runtime agent support (Claude + Codex), and artifact-based phase handoff via .symphony/orchestration/ directory.",
+  "rationale": "The current Symphony codebase is a single-phase, Codex-only orchestrator. PAN-89 requires a brainstorm_arbiter_worker_judge mode where: (a) N parallel planners generate proposals, (b) an arbiter merges them into a canonical plan, (c) a worker executes, (d) a judge validates via Linear MCP. The main gaps are: no orchestration_mode config, no phase sequencing in the orchestrator, no Claude runtime support (only Codex app-server), no artifact directory management, and no dashboard visibility for multi-phase runs. This proposal takes a phased-extension approach—adding a PhaseOrchestrator module that wraps the existing Orchestrator dispatch logic rather than rewriting it, minimizing risk to the existing single-agent flow.",
+  "tasks": [
+    {
+      "id": "T1",
+      "title": "Extend Config.Schema with orchestration_mode and multi-runtime settings",
+      "status": "pending",
+      "instructions": "Add an `orchestration` embedded schema to Config.Schema with fields: `mode` (string, default 'single', valid values: 'single', 'brainstorm_arbiter_worker_judge'), `planner_count` (integer, default 2), `max_cycles` (integer, default 20), `artifact_root` (string, default '.symphony/orchestration'). Add a `claude` embedded schema alongside `codex` with fields: `command` (string, default 'claude --print'), `model` (string, optional). Update WORKFLOW.md front matter to include `orchestration:` block. File: elixir/lib/symphony_elixir/config/schema.ex"
+    },
+    {
+      "id": "T2",
+      "title": "Add PhaseOrchestrator module for multi-phase dispatch",
+      "status": "pending",
+      "instructions": "Create elixir/lib/symphony_elixir/phase_orchestrator.ex as a GenServer that manages the brainstorm->arbiter->worker->judge lifecycle for a single issue. State tracks: current_phase (:brainstorm | :arbiter | :worker | :judge | :done), cycle (1..max_cycles), planner_pids (map of index->pid), artifact paths. On init, create .symphony/orchestration/proposals/ dir in workspace. Phase transitions: (1) :brainstorm spawns N planners in parallel via AgentRunner, waits for all proposals to exist; (2) :arbiter spawns single agent that reads proposals/ and writes plan.json; (3) :worker spawns agent with plan.json injected into prompt; (4) :judge spawns agent that reads workspace state + uses Linear MCP to make accept/reject decision, writes judge.json. Emit {:phase_transition, issue_id, phase} messages to the parent Orchestrator for dashboard updates."
+    },
+    {
+      "id": "T3",
+      "title": "Add Claude agent runtime to AgentRunner",
+      "status": "pending",
+      "instructions": "Extend AgentRunner.run/3 to accept a `runtime: :claude | :codex` option. When runtime is :claude, skip the Codex app-server protocol and instead shell out to `claude` CLI (command from config.claude.command) with the prompt piped via stdin or --print flag. Parse Claude CLI stdout as the agent response. Keep the existing Codex path as default. The prompt_builder already produces the full prompt string, so the Claude path is simpler—just exec + capture. File: elixir/lib/symphony_elixir/agent_runner.ex. Add a new elixir/lib/symphony_elixir/claude/runner.ex module that handles the Claude CLI subprocess lifecycle (spawn, stream output, timeout, cleanup)."
+    },
+    {
+      "id": "T4",
+      "title": "Extend PromptBuilder with phase-aware template variables",
+      "status": "pending",
+      "instructions": "Add phase-specific Liquid template variables to PromptBuilder.build_prompt/2: `agent.role` ('planner' | 'arbiter' | 'worker' | 'judge'), `agent.planner_index` (integer, for brainstorm phase), `agent.cycle` (integer), `agent.artifact_root` (path), `agent.proposal_paths` (list of proposal file paths), `agent.plan_path` (path to canonical plan.json). These are passed via opts keyword and merged into the Solid render context. File: elixir/lib/symphony_elixir/prompt_builder.ex"
+    },
+    {
+      "id": "T5",
+      "title": "Wire PhaseOrchestrator into the main Orchestrator dispatch",
+      "status": "pending",
+      "instructions": "In Orchestrator.dispatch_issue/2, check Config orchestration.mode. If 'brainstorm_arbiter_worker_judge', start a PhaseOrchestrator child instead of directly spawning an AgentRunner task. The PhaseOrchestrator manages its own lifecycle and reports back via the same {:DOWN, ref, ...} protocol. Add handle_info clauses for {:phase_transition, issue_id, phase} to update running entry metadata. File: elixir/lib/symphony_elixir/orchestrator.ex"
+    },
+    {
+      "id": "T6",
+      "title": "Extend Presenter and Dashboard with phase visibility",
+      "status": "pending",
+      "instructions": "Add `orchestration_phase` and `orchestration_cycle` fields to the running-entry payload in Presenter.running_payload/1. Surface these in the StatusDashboard terminal UI (e.g., 'PAN-89 [brainstorm 2/2]') and in the ObservabilityApiController JSON response. The DashboardLive view should show phase progression. Files: elixir/lib/symphony_elixir_web/presenter.ex, elixir/lib/symphony_elixir/status_dashboard.ex, elixir/lib/symphony_elixir_web/live/dashboard_live.ex, elixir/lib/symphony_elixir_web/controllers/observability_api_controller.ex"
+    },
+    {
+      "id": "T7",
+      "title": "Add artifact directory management to Workspace module",
+      "status": "pending",
+      "instructions": "Add Workspace.ensure_orchestration_dirs/2 that creates the .symphony/orchestration/proposals/ directory tree within a workspace. Called by PhaseOrchestrator on init. Add Workspace.orchestration_artifact_path/3 for consistent path construction (workspace, :proposals | :plan | :judge, optional filename). File: elixir/lib/symphony_elixir/workspace.ex"
+    },
+    {
+      "id": "T8",
+      "title": "Update WORKFLOW.md with orchestration config and Claude runtime",
+      "status": "pending",
+      "instructions": "Add orchestration block to WORKFLOW.md front matter: `orchestration: { mode: brainstorm_arbiter_worker_judge, planner_count: 2, max_cycles: 20 }`. Add claude block: `claude: { command: 'claude --print' }`. Add phase-specific prompt sections using Liquid conditionals: {% if agent.role == 'planner' %} brainstorm instructions {% endif %}, etc. File: elixir/WORKFLOW.md"
+    },
+    {
+      "id": "T9",
+      "title": "Ensure judge phase uses Linear MCP for final decision",
+      "status": "pending",
+      "instructions": "The judge prompt template must instruct the agent to use Linear MCP (linear_graphql tool or symphony-linear MCP) to read issue state, comments, and acceptance criteria before rendering its verdict. The judge writes judge.json with fields: {verdict: 'accept' | 'reject' | 'retry', cycle, rationale, linear_evidence: [...]}. If verdict is 'retry' and cycle < max_cycles, PhaseOrchestrator increments cycle and returns to :brainstorm phase. If 'accept', PhaseOrchestrator completes normally. File: judge prompt section in WORKFLOW.md, PhaseOrchestrator retry logic."
+    },
+    {
+      "id": "T10",
+      "title": "Add tests for PhaseOrchestrator and multi-phase flow",
+      "status": "pending",
+      "instructions": "Add elixir/test/symphony_elixir/phase_orchestrator_test.exs with tests: (1) brainstorm phase spawns correct number of planners, (2) arbiter phase reads proposals and writes plan.json, (3) worker phase receives canonical plan in prompt, (4) judge phase writes judge.json with verdict, (5) retry cycle increments on 'retry' verdict, (6) full end-to-end phase progression with memory tracker. Use the existing test_support.exs patterns and tracker: memory config."
+    }
+  ]
+}

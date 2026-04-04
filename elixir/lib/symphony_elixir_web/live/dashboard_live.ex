@@ -133,6 +133,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                 <colgroup>
                   <col style="width: 12rem;" />
                   <col style="width: 8rem;" />
+                  <col style="width: 9rem;" />
                   <col style="width: 7.5rem;" />
                   <col style="width: 8.5rem;" />
                   <col />
@@ -142,6 +143,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                   <tr>
                     <th>Issue</th>
                     <th>State</th>
+                    <th>Phase</th>
                     <th>Session</th>
                     <th>Runtime / turns</th>
                     <th>Codex update</th>
@@ -160,6 +162,13 @@ defmodule SymphonyElixirWeb.DashboardLive do
                       <span class={state_badge_class(entry.state)}>
                         <%= entry.state %>
                       </span>
+                    </td>
+                    <td>
+                      <%= if entry.orchestration_mode && entry.orchestration_mode != "single" do %>
+                        <span class="phase-indicator"><%= format_phase_progress(entry) %></span>
+                      <% else %>
+                        <span class="muted">single</span>
+                      <% end %>
                     </td>
                     <td>
                       <div class="session-stack">
@@ -327,4 +336,23 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   defp pretty_value(nil), do: "n/a"
   defp pretty_value(value), do: inspect(value, pretty: true, limit: :infinity)
+
+  defp format_phase_progress(entry) do
+    phases = ~w(brainstorm arbiter worker judge)
+    current = entry.current_phase
+
+    completed =
+      (entry.phase_history || [])
+      |> Enum.filter(&(&1.status == "completed"))
+      |> Enum.map(& &1.phase)
+      |> MapSet.new()
+
+    Enum.map_join(phases, " > ", fn phase ->
+      cond do
+        phase == current -> "[#{phase}]"
+        MapSet.member?(completed, phase) -> "#{phase} ✓"
+        true -> phase
+      end
+    end)
+  end
 end

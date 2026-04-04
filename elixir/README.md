@@ -145,6 +145,47 @@ codex:
   command: "$CODEX_BIN app-server --model gpt-5.3-codex"
 ```
 
+## Multi-agent orchestration mode
+
+Symphony supports a `brainstorm_arbiter_worker_judge` orchestration mode that runs a multi-phase
+pipeline for each issue:
+
+1. **Brainstorm**: Multiple Codex planners generate independent proposals
+2. **Arbiter**: A Codex arbiter synthesizes a canonical plan from the proposals
+3. **Worker**: A Claude agent executes the canonical plan
+4. **Judge**: A Claude agent evaluates the work and writes a final decision using Linear MCP
+
+Enable it in `WORKFLOW.md`:
+
+```yaml
+orchestration:
+  mode: brainstorm_arbiter_worker_judge
+  planner_count: 2
+  artifact_dir: .symphony/orchestration
+  primary_agent_runtime: claude
+  role_overrides: {}
+```
+
+Configuration fields:
+
+- `orchestration.mode`: `single` (default) or `brainstorm_arbiter_worker_judge`
+- `orchestration.planner_count`: minimum 2, how many planners run in the brainstorm phase
+- `orchestration.artifact_dir`: where phase artifacts are written (default: `.symphony/orchestration`)
+- `orchestration.primary_agent_runtime`: `codex` or `claude` (default: `codex`)
+- `orchestration.role_overrides`: per-role runtime overrides (e.g., `{ "worker": { "runtime": "codex" } }`)
+
+Artifacts written during a brainstorm run:
+
+- `.symphony/orchestration/proposals/planner-*.json` — individual planner proposals
+- `.symphony/orchestration/plan.json` — the canonical plan from the arbiter
+- `.symphony/orchestration/judge.json` — the judge's final decision
+
+The dashboard and `/api/v1/*` API surface `orchestration_mode`, `current_phase`, and `phase_history`
+fields for active brainstorm runs.
+
+When the orchestration block is absent or `mode` is `single`, the existing single-agent Codex path
+is used unchanged.
+
 - If `WORKFLOW.md` is missing or has invalid YAML at startup, Symphony does not boot.
 - If a later reload fails, Symphony keeps running with the last known good workflow and logs the
   reload error until the file is fixed.

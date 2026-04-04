@@ -356,7 +356,10 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "last_message" => "rendered",
                  "started_at" => state_payload["running"] |> List.first() |> Map.fetch!("started_at"),
                  "last_event_at" => nil,
-                 "tokens" => %{"input_tokens" => 4, "output_tokens" => 8, "total_tokens" => 12}
+                 "tokens" => %{"input_tokens" => 4, "output_tokens" => 8, "total_tokens" => 12},
+                 "orchestration_mode" => nil,
+                 "current_phase" => nil,
+                 "phase_history" => []
                }
              ],
              "retrying" => [
@@ -407,7 +410,10 @@ defmodule SymphonyElixir.ExtensionsTest do
              "logs" => %{"codex_session_logs" => []},
              "recent_events" => [],
              "last_error" => nil,
-             "tracked" => %{}
+             "tracked" => %{},
+             "orchestration_mode" => nil,
+             "current_phase" => nil,
+             "phase_history" => []
            }
 
     conn = get(build_conn(), "/api/v1/MT-RETRY")

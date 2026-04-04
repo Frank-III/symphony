@@ -34,6 +34,11 @@ codex:
   thread_sandbox: workspace-write
   turn_sandbox_policy:
     type: workspaceWrite
+# orchestration:
+#   mode: brainstorm_arbiter_worker_judge
+#   planner_count: 2
+#   artifact_dir: .symphony/orchestration
+#   primary_agent_runtime: claude
 ---
 
 You are working on a Linear ticket `{{ issue.identifier }}`

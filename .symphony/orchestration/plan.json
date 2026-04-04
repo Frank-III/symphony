@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "cycle": 1,
+  "summary": "Build on the existing orchestration implementation rather than replacing it: tighten the repo-backed artifact contract, make the brainstorm -> arbiter -> worker -> judge pipeline resumable across cycles, enforce real Linear-backed judge decisions for Claude, and expose the full run state in the dashboard and API.",
+  "tasks": [
+    {
+      "id": "T1",
+      "title": "Normalize orchestration config, prompt, and artifact contracts",
+      "status": "pending",
+      "instructions": "Update the existing orchestration contract in `elixir/lib/symphony_elixir/config/schema.ex`, `elixir/lib/symphony_elixir/config.ex`, `elixir/lib/symphony_elixir/prompt_builder.ex`, `elixir/lib/symphony_elixir/workflow.ex`, and `elixir/lib/symphony_elixir/orchestration.ex`. Add the missing cycle and max-cycle settings, make per-role runtime resolution consistent with config, and move phase prompt assembly onto a role-aware prompt path instead of hard-coded strings. Tighten artifact validation so proposals, `plan.json`, and `judge.json` must contain the fields the workflow actually depends on (`version`, `cycle`, `tasks`, `next_task_id`, selected proposals, decision, and Linear evidence) before later phases proceed."
+    },
+    {
+      "id": "T2",
+      "title": "Upgrade the existing pipeline into a resumable multi-cycle engine",
+      "status": "pending",
+      "instructions": "Extend `elixir/lib/symphony_elixir/orchestration/pipeline.ex` and the related workspace/orchestration helpers so `.symphony/orchestration` artifacts are the source of truth. Reuse valid proposals, `plan.json`, and `judge.json` when resuming, only rerun missing or invalid phases, and let judge outcomes drive the next action (`accept` completes, `replan` advances to the next cycle up to the configured limit, `reject` fails cleanly). Preserve the current orchestrator integration instead of introducing a parallel execution path."
+    },
+    {
+      "id": "T3",
+      "title": "Harden mixed-runtime execution and strict Linear-backed judging",
+      "status": "pending",
+      "instructions": "Refine `elixir/lib/symphony_elixir/orchestration/runtime.ex`, `elixir/lib/symphony_elixir/claude/runner.ex`, and any supporting tool wiring so the Claude worker and judge phases run against the canonical plan with the actual Linear tool name/config that Symphony exposes. Make the judge phase fail when Linear access is unavailable or when `judge.json` lacks concrete Linear query evidence, instead of merely logging a warning. Keep brainstorm and arbiter on Codex unless config explicitly overrides them."
+    },
+    {
+      "id": "T4",
+      "title": "Expose orchestration run state in the dashboard and API",
+      "status": "pending",
+      "instructions": "Build on the existing presenter/dashboard plumbing in `elixir/lib/symphony_elixir/orchestrator.ex`, `elixir/lib/symphony_elixir_web/presenter.ex`, `elixir/lib/symphony_elixir_web/controllers/observability_api_controller.ex`, `elixir/lib/symphony_elixir_web/router.ex`, and `elixir/lib/symphony_elixir_web/live/dashboard_live.ex` so a brainstorm run is explicitly visible. Include cycle number, current phase, per-phase runtime, artifact completion or validity, and final judge verdict in the API surface that represents a run, and render the same state in the local dashboard."
+    },
+    {
+      "id": "T5",
+      "title": "Add deterministic orchestration coverage and a local dogfood scenario",
+      "status": "pending",
+      "instructions": "Add focused tests for config and prompt rendering, artifact validation, pipeline resume and replan behavior, Claude runtime wiring, judge Linear enforcement, and API/dashboard projections. Then add a local dogfood integration path under `elixir/test` that exercises the full brainstorm -> arbiter -> worker -> judge flow with at least two planner proposals and proves the resulting run is observable through the local Symphony service surfaces."
+    }
+  ],
+  "next_task_id": "T1",
+  "selected_proposals": [
+    1,
+    2
+  ]
+}

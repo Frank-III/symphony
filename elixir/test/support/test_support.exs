@@ -124,6 +124,11 @@ defmodule SymphonyElixir.TestSupport do
           observability_render_interval_ms: 16,
           server_port: nil,
           server_host: nil,
+          orchestration_mode: nil,
+          orchestration_planner_count: nil,
+          orchestration_artifact_dir: nil,
+          orchestration_primary_agent_runtime: nil,
+          orchestration_role_overrides: nil,
           prompt: @workflow_prompt
         ],
         overrides
@@ -161,6 +166,11 @@ defmodule SymphonyElixir.TestSupport do
     observability_render_interval_ms = Keyword.get(config, :observability_render_interval_ms)
     server_port = Keyword.get(config, :server_port)
     server_host = Keyword.get(config, :server_host)
+    orchestration_mode = Keyword.get(config, :orchestration_mode)
+    orchestration_planner_count = Keyword.get(config, :orchestration_planner_count)
+    orchestration_artifact_dir = Keyword.get(config, :orchestration_artifact_dir)
+    orchestration_primary_agent_runtime = Keyword.get(config, :orchestration_primary_agent_runtime)
+    orchestration_role_overrides = Keyword.get(config, :orchestration_role_overrides)
     prompt = Keyword.get(config, :prompt)
 
     sections =
@@ -195,6 +205,13 @@ defmodule SymphonyElixir.TestSupport do
         hooks_yaml(hook_after_create, hook_before_run, hook_after_run, hook_before_remove, hook_timeout_ms),
         observability_yaml(observability_enabled, observability_refresh_ms, observability_render_interval_ms),
         server_yaml(server_port, server_host),
+        orchestration_yaml(
+          orchestration_mode,
+          orchestration_planner_count,
+          orchestration_artifact_dir,
+          orchestration_primary_agent_runtime,
+          orchestration_role_overrides
+        ),
         "---",
         prompt
       ]
@@ -272,6 +289,21 @@ defmodule SymphonyElixir.TestSupport do
       "server:",
       port && "  port: #{yaml_value(port)}",
       host && "  host: #{yaml_value(host)}"
+    ]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.join("\n")
+  end
+
+  defp orchestration_yaml(nil, nil, nil, nil, nil), do: nil
+
+  defp orchestration_yaml(mode, planner_count, artifact_dir, primary_agent_runtime, role_overrides) do
+    [
+      "orchestration:",
+      mode && "  mode: #{yaml_value(mode)}",
+      planner_count && "  planner_count: #{yaml_value(planner_count)}",
+      artifact_dir && "  artifact_dir: #{yaml_value(artifact_dir)}",
+      primary_agent_runtime && "  primary_agent_runtime: #{yaml_value(primary_agent_runtime)}",
+      role_overrides && "  role_overrides: #{yaml_value(role_overrides)}"
     ]
     |> Enum.reject(&is_nil/1)
     |> Enum.join("\n")

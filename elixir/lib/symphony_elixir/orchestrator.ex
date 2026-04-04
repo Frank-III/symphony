@@ -203,6 +203,54 @@ defmodule SymphonyElixir.Orchestrator do
 
   def handle_info({:codex_worker_update, _issue_id, _update}, state), do: {:noreply, state}
 
+  def handle_info({:pipeline_progress, issue_id, {:phase_started, phase}}, %{running: running} = state)
+      when is_binary(issue_id) do
+    case Map.get(running, issue_id) do
+      nil ->
+        {:noreply, state}
+
+      running_entry ->
+        phase_entry = %{
+          phase: phase,
+          started_at: DateTime.utc_now(),
+          completed_at: nil,
+          status: :running
+        }
+
+        updated =
+          running_entry
+          |> Map.put(:current_phase, phase)
+          |> Map.update(:phase_history, [phase_entry], &(&1 ++ [phase_entry]))
+
+        notify_dashboard()
+        {:noreply, %{state | running: Map.put(running, issue_id, updated)}}
+    end
+  end
+
+  def handle_info({:pipeline_progress, issue_id, {:phase_completed, phase}}, %{running: running} = state)
+      when is_binary(issue_id) do
+    case Map.get(running, issue_id) do
+      nil ->
+        {:noreply, state}
+
+      running_entry ->
+        history =
+          Enum.map(running_entry.phase_history || [], fn entry ->
+            if entry.phase == phase and entry.status == :running do
+              %{entry | completed_at: DateTime.utc_now(), status: :completed}
+            else
+              entry
+            end
+          end)
+
+        updated = %{running_entry | phase_history: history}
+        notify_dashboard()
+        {:noreply, %{state | running: Map.put(running, issue_id, updated)}}
+    end
+  end
+
+  def handle_info({:pipeline_progress, _issue_id, _msg}, state), do: {:noreply, state}
+
   def handle_info({:retry_issue, issue_id, retry_token}, state) do
     result =
       case pop_retry_attempt_state(state, issue_id, retry_token) do
@@ -720,7 +768,10 @@ defmodule SymphonyElixir.Orchestrator do
             codex_last_reported_total_tokens: 0,
             turn_count: 0,
             retry_attempt: normalize_retry_attempt(attempt),
-            started_at: DateTime.utc_now()
+            started_at: DateTime.utc_now(),
+            orchestration_mode: orchestration_mode(),
+            current_phase: nil,
+            phase_history: []
           })
 
         %{
@@ -898,6 +949,14 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp notify_dashboard do
     StatusDashboard.notify_update()
+  end
+
+  defp orchestration_mode do
+    try do
+      Config.orchestration_mode()
+    rescue
+      _ -> "single"
+    end
   end
 
   defp handle_active_retry(state, issue, attempt, metadata) do
@@ -1122,7 +1181,10 @@ defmodule SymphonyElixir.Orchestrator do
           last_codex_timestamp: metadata.last_codex_timestamp,
           last_codex_message: metadata.last_codex_message,
           last_codex_event: metadata.last_codex_event,
-          runtime_seconds: running_seconds(metadata.started_at, now)
+          runtime_seconds: running_seconds(metadata.started_at, now),
+          orchestration_mode: Map.get(metadata, :orchestration_mode),
+          current_phase: Map.get(metadata, :current_phase),
+          phase_history: Map.get(metadata, :phase_history, [])
         }
       end)
 

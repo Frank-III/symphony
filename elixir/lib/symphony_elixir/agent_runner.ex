@@ -5,7 +5,7 @@ defmodule SymphonyElixir.AgentRunner do
 
   require Logger
   alias SymphonyElixir.Codex.AppServer
-  alias SymphonyElixir.{Config, Linear.Issue, PromptBuilder, Tracker, Workspace}
+  alias SymphonyElixir.{Config, Linear.Issue, Orchestration.Pipeline, PromptBuilder, Tracker, Workspace}
 
   @type worker_host :: String.t() | nil
 
@@ -35,7 +35,11 @@ defmodule SymphonyElixir.AgentRunner do
 
         try do
           with :ok <- Workspace.run_before_run_hook(workspace, issue, worker_host) do
-            run_codex_turns(workspace, issue, codex_update_recipient, opts, worker_host)
+            if Config.brainstorm_mode?() do
+              run_brainstorm_pipeline(workspace, issue, codex_update_recipient, opts)
+            else
+              run_codex_turns(workspace, issue, codex_update_recipient, opts, worker_host)
+            end
           end
         after
           Workspace.run_after_run_hook(workspace, issue, worker_host)
@@ -44,6 +48,11 @@ defmodule SymphonyElixir.AgentRunner do
       {:error, reason} ->
         {:error, reason}
     end
+  end
+
+  defp run_brainstorm_pipeline(workspace, issue, codex_update_recipient, opts) do
+    Logger.info("Dispatching brainstorm pipeline for #{issue_context(issue)}")
+    Pipeline.run(issue, workspace, codex_update_recipient, opts)
   end
 
   defp codex_message_handler(recipient, issue) do

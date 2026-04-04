@@ -80,7 +80,10 @@ defmodule SymphonyElixirWeb.Presenter do
       },
       recent_events: (running && recent_events_payload(running)) || [],
       last_error: retry && retry.error,
-      tracked: %{}
+      tracked: %{},
+      orchestration_mode: running && Map.get(running, :orchestration_mode),
+      current_phase: running && phase_to_string(Map.get(running, :current_phase)),
+      phase_history: (running && format_phase_history(Map.get(running, :phase_history, []))) || []
     }
   end
 
@@ -112,7 +115,10 @@ defmodule SymphonyElixirWeb.Presenter do
         input_tokens: entry.codex_input_tokens,
         output_tokens: entry.codex_output_tokens,
         total_tokens: entry.codex_total_tokens
-      }
+      },
+      orchestration_mode: Map.get(entry, :orchestration_mode),
+      current_phase: phase_to_string(Map.get(entry, :current_phase)),
+      phase_history: format_phase_history(Map.get(entry, :phase_history, []))
     }
   end
 
@@ -197,4 +203,21 @@ defmodule SymphonyElixirWeb.Presenter do
   end
 
   defp iso8601(_datetime), do: nil
+
+  defp phase_to_string(nil), do: nil
+  defp phase_to_string(phase) when is_atom(phase), do: Atom.to_string(phase)
+  defp phase_to_string(phase) when is_binary(phase), do: phase
+
+  defp format_phase_history(entries) when is_list(entries) do
+    Enum.map(entries, fn entry ->
+      %{
+        phase: phase_to_string(Map.get(entry, :phase)),
+        started_at: iso8601(Map.get(entry, :started_at)),
+        completed_at: iso8601(Map.get(entry, :completed_at)),
+        status: to_string(Map.get(entry, :status))
+      }
+    end)
+  end
+
+  defp format_phase_history(_), do: []
 end
