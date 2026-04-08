@@ -112,7 +112,8 @@ defmodule SymphonyElixirWeb.Presenter do
         input_tokens: entry.codex_input_tokens,
         output_tokens: entry.codex_output_tokens,
         total_tokens: entry.codex_total_tokens
-      }
+      },
+      runtime: runtime_identity(entry)
     }
   end
 
@@ -143,7 +144,8 @@ defmodule SymphonyElixirWeb.Presenter do
         input_tokens: running.codex_input_tokens,
         output_tokens: running.codex_output_tokens,
         total_tokens: running.codex_total_tokens
-      }
+      },
+      runtime: runtime_identity(running)
     }
   end
 
@@ -176,6 +178,14 @@ defmodule SymphonyElixirWeb.Presenter do
       }
     ]
     |> Enum.reject(&is_nil(&1.at))
+  end
+
+  defp runtime_identity(entry) do
+    %{
+      profile: Map.get(entry, :runtime_profile, "codex"),
+      provider: Map.get(entry, :runtime_provider, "codex"),
+      adapter: Map.get(entry, :runtime_adapter, "direct")
+    }
   end
 
   defp summarize_message(nil), do: nil
