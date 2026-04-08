@@ -699,6 +699,8 @@ defmodule SymphonyElixir.Orchestrator do
 
         Logger.info("Dispatching issue to agent: #{issue_context(issue)} pid=#{inspect(pid)} attempt=#{inspect(attempt)} worker_host=#{worker_host || "local"}")
 
+        runtime_info = resolve_runtime_info_for_dispatch()
+
         running =
           Map.put(state.running, issue.id, %{
             pid: pid,
@@ -720,7 +722,10 @@ defmodule SymphonyElixir.Orchestrator do
             codex_last_reported_total_tokens: 0,
             turn_count: 0,
             retry_attempt: normalize_retry_attempt(attempt),
-            started_at: DateTime.utc_now()
+            started_at: DateTime.utc_now(),
+            runtime_profile: runtime_info.profile_name,
+            runtime_provider: runtime_info.provider,
+            runtime_adapter: runtime_info.adapter
           })
 
         %{
@@ -940,6 +945,20 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp normalize_retry_attempt(attempt) when is_integer(attempt) and attempt > 0, do: attempt
   defp normalize_retry_attempt(_attempt), do: 0
+
+  defp resolve_runtime_info_for_dispatch do
+    case SymphonyElixir.Runtime.Registry.resolve_for_role(:worker) do
+      {:ok, resolved} ->
+        %{
+          profile_name: resolved.config.name,
+          provider: resolved.config.provider,
+          adapter: resolved.config.adapter
+        }
+
+      {:error, _} ->
+        %{profile_name: "codex", provider: "codex", adapter: "direct"}
+    end
+  end
 
   defp next_retry_attempt_from_running(running_entry) do
     case Map.get(running_entry, :retry_attempt) do

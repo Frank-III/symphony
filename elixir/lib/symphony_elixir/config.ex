@@ -114,6 +114,36 @@ defmodule SymphonyElixir.Config do
     end
   end
 
+  @spec runtime_profile_for_role(atom()) ::
+          {:ok, Schema.RuntimeProfile.t()} | {:error, term()}
+  def runtime_profile_for_role(role) when role in [:planner, :worker, :judge] do
+    with {:ok, settings} <- settings() do
+      case Schema.resolve_role_runtime(settings, role) do
+        nil ->
+          {:ok, Schema.materialize_codex_default_profile(settings)}
+
+        name ->
+          case Schema.runtime_profile(settings, name) do
+            {:ok, profile} -> {:ok, profile}
+            {:error, :not_found} -> {:error, {:undefined_runtime, name}}
+          end
+      end
+    end
+  end
+
+  @spec runtime_profiles() :: {:ok, %{String.t() => Schema.RuntimeProfile.t()}} | {:error, term()}
+  def runtime_profiles do
+    with {:ok, settings} <- settings() do
+      profiles = settings.runtimes
+
+      if map_size(profiles) == 0 do
+        {:ok, %{"codex" => Schema.materialize_codex_default_profile(settings)}}
+      else
+        {:ok, profiles}
+      end
+    end
+  end
+
   defp validate_semantics(settings) do
     cond do
       is_nil(settings.tracker.kind) ->

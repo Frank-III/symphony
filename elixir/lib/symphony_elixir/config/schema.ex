@@ -199,6 +199,63 @@ defmodule SymphonyElixir.Config.Schema do
     end
   end
 
+  defmodule RuntimeProfile do
+    @moduledoc false
+    use Ecto.Schema
+    import Ecto.Changeset
+
+    @primary_key false
+
+    @valid_adapters ~w(direct acp)
+    @valid_providers ~w(codex claude pi opencode)
+
+    embedded_schema do
+      field(:name, :string)
+      field(:adapter, :string, default: "direct")
+      field(:provider, :string)
+      field(:command, :string)
+      field(:endpoint, :string)
+      field(:auth, :string)
+      field(:model, :string)
+      field(:approval_policy, StringOrMap)
+      field(:thread_sandbox, :string)
+      field(:turn_sandbox_policy, :map)
+      field(:turn_timeout_ms, :integer)
+      field(:read_timeout_ms, :integer)
+      field(:stall_timeout_ms, :integer)
+    end
+
+    @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
+    def changeset(schema, attrs) do
+      schema
+      |> cast(
+        attrs,
+        [
+          :name,
+          :adapter,
+          :provider,
+          :command,
+          :endpoint,
+          :auth,
+          :model,
+          :approval_policy,
+          :thread_sandbox,
+          :turn_sandbox_policy,
+          :turn_timeout_ms,
+          :read_timeout_ms,
+          :stall_timeout_ms
+        ],
+        empty_values: []
+      )
+      |> validate_required([:name, :adapter, :provider])
+      |> validate_inclusion(:adapter, @valid_adapters)
+      |> validate_inclusion(:provider, @valid_providers)
+      |> validate_number(:turn_timeout_ms, greater_than: 0)
+      |> validate_number(:read_timeout_ms, greater_than: 0)
+      |> validate_number(:stall_timeout_ms, greater_than_or_equal_to: 0)
+    end
+  end
+
   defmodule Hooks do
     @moduledoc false
     use Ecto.Schema
@@ -271,6 +328,10 @@ defmodule SymphonyElixir.Config.Schema do
     embeds_one(:hooks, Hooks, on_replace: :update, defaults_to_struct: true)
     embeds_one(:observability, Observability, on_replace: :update, defaults_to_struct: true)
     embeds_one(:server, Server, on_replace: :update, defaults_to_struct: true)
+    field(:runtimes, :map, default: %{})
+    field(:planner_runtime, :string)
+    field(:worker_runtime, :string)
+    field(:judge_runtime, :string)
   end
 
   @spec parse(map()) :: {:ok, %__MODULE__{}} | {:error, {:invalid_workflow_config, String.t()}}
@@ -353,7 +414,7 @@ defmodule SymphonyElixir.Config.Schema do
 
   defp changeset(attrs) do
     %__MODULE__{}
-    |> cast(attrs, [])
+    |> cast(attrs, [:runtimes, :planner_runtime, :worker_runtime, :judge_runtime], empty_values: [])
     |> cast_embed(:tracker, with: &Tracker.changeset/2)
     |> cast_embed(:polling, with: &Polling.changeset/2)
     |> cast_embed(:workspace, with: &Workspace.changeset/2)
@@ -363,6 +424,8 @@ defmodule SymphonyElixir.Config.Schema do
     |> cast_embed(:hooks, with: &Hooks.changeset/2)
     |> cast_embed(:observability, with: &Observability.changeset/2)
     |> cast_embed(:server, with: &Server.changeset/2)
+    |> validate_runtime_profiles()
+    |> validate_runtime_role_references()
   end
 
   defp finalize_settings(settings) do
@@ -383,7 +446,43 @@ defmodule SymphonyElixir.Config.Schema do
         turn_sandbox_policy: normalize_optional_map(settings.codex.turn_sandbox_policy)
     }
 
-    %{settings | tracker: tracker, workspace: workspace, codex: codex}
+    runtimes = finalize_runtime_profiles(settings.runtimes)
+
+    %{settings | tracker: tracker, workspace: workspace, codex: codex, runtimes: runtimes}
+  end
+
+  defp finalize_runtime_profiles(raw_runtimes) when is_map(raw_runtimes) do
+    case parse_runtime_profiles(raw_runtimes) do
+      {:ok, profiles} ->
+        Map.new(profiles, fn {name, profile} ->
+          finalized = %{
+            profile
+            | approval_policy: normalize_optional_map_or_string(profile.approval_policy),
+              turn_sandbox_policy: normalize_optional_map(profile.turn_sandbox_policy),
+              auth: resolve_optional_env(profile.auth)
+          }
+
+          {name, finalized}
+        end)
+
+      {:error, _} ->
+        %{}
+    end
+  end
+
+  defp finalize_runtime_profiles(_), do: %{}
+
+  defp normalize_optional_map_or_string(nil), do: nil
+  defp normalize_optional_map_or_string(value) when is_binary(value), do: value
+  defp normalize_optional_map_or_string(value) when is_map(value), do: normalize_keys(value)
+
+  defp resolve_optional_env(nil), do: nil
+
+  defp resolve_optional_env(value) when is_binary(value) do
+    case env_reference_name(value) do
+      {:ok, env_name} -> System.get_env(env_name) || value
+      :error -> value
+    end
   end
 
   defp normalize_keys(value) when is_map(value) do
@@ -519,6 +618,103 @@ defmodule SymphonyElixir.Config.Schema do
 
   defp expand_local_workspace_root(_workspace_root) do
     Path.expand(Path.join(System.tmp_dir!(), "symphony_workspaces"))
+  end
+
+  @spec parse_runtime_profiles(map()) :: {:ok, %{String.t() => RuntimeProfile.t()}} | {:error, String.t()}
+  def parse_runtime_profiles(raw_runtimes) when is_map(raw_runtimes) do
+    results =
+      Enum.reduce_while(raw_runtimes, {:ok, %{}}, fn {name, attrs}, {:ok, acc} ->
+        profile_attrs = Map.put(normalize_keys(attrs), "name", to_string(name))
+
+        case RuntimeProfile.changeset(%RuntimeProfile{}, profile_attrs) |> apply_action(:validate) do
+          {:ok, profile} ->
+            {:cont, {:ok, Map.put(acc, to_string(name), profile)}}
+
+          {:error, changeset} ->
+            {:halt, {:error, "runtime '#{name}': #{format_errors(changeset)}"}}
+        end
+      end)
+
+    results
+  end
+
+  def parse_runtime_profiles(_), do: {:ok, %{}}
+
+  @spec resolve_role_runtime(t(), atom()) :: String.t() | nil
+  def resolve_role_runtime(settings, role) when role in [:planner, :worker, :judge] do
+    case role do
+      :planner -> settings.planner_runtime
+      :worker -> settings.worker_runtime
+      :judge -> settings.judge_runtime
+    end
+  end
+
+  @spec runtime_profile(t(), String.t()) :: {:ok, RuntimeProfile.t()} | {:error, :not_found}
+  def runtime_profile(settings, name) when is_binary(name) do
+    case Map.fetch(settings.runtimes, name) do
+      {:ok, profile} -> {:ok, profile}
+      :error -> {:error, :not_found}
+    end
+  end
+
+  @spec materialize_codex_default_profile(t()) :: RuntimeProfile.t()
+  def materialize_codex_default_profile(settings) do
+    codex = settings.codex
+
+    %RuntimeProfile{
+      name: "codex",
+      adapter: "direct",
+      provider: "codex",
+      command: codex.command,
+      approval_policy: codex.approval_policy,
+      thread_sandbox: codex.thread_sandbox,
+      turn_sandbox_policy: codex.turn_sandbox_policy,
+      turn_timeout_ms: codex.turn_timeout_ms,
+      read_timeout_ms: codex.read_timeout_ms,
+      stall_timeout_ms: codex.stall_timeout_ms
+    }
+  end
+
+  defp validate_runtime_profiles(changeset) do
+    case get_change(changeset, :runtimes) do
+      nil ->
+        changeset
+
+      raw when is_map(raw) ->
+        case parse_runtime_profiles(raw) do
+          {:ok, _profiles} -> changeset
+          {:error, message} -> add_error(changeset, :runtimes, message)
+        end
+
+      _ ->
+        changeset
+    end
+  end
+
+  defp validate_runtime_role_references(changeset) do
+    runtimes = get_field(changeset, :runtimes) || %{}
+
+    changeset
+    |> validate_role_ref(:planner_runtime, runtimes)
+    |> validate_role_ref(:worker_runtime, runtimes)
+    |> validate_role_ref(:judge_runtime, runtimes)
+  end
+
+  defp validate_role_ref(changeset, field, runtimes) do
+    case get_change(changeset, field) do
+      nil ->
+        changeset
+
+      name when is_binary(name) ->
+        if Map.has_key?(runtimes, name) do
+          changeset
+        else
+          add_error(changeset, field, "references undefined runtime '#{name}'")
+        end
+
+      _ ->
+        changeset
+    end
   end
 
   defp format_errors(changeset) do
