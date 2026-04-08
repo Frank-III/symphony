@@ -18,12 +18,13 @@ defmodule SymphonyElixir.StatusDashboard do
   @running_id_width 8
   @running_stage_width 14
   @running_pid_width 8
+  @running_runtime_width 10
   @running_age_width 12
   @running_tokens_width 10
   @running_session_width 14
-  @running_event_default_width 44
+  @running_event_default_width 34
   @running_event_min_width 12
-  @running_row_chrome_width 10
+  @running_row_chrome_width 11
   @default_terminal_columns 115
 
   @ansi_reset IO.ANSI.reset()
@@ -593,6 +594,8 @@ defmodule SymphonyElixir.StatusDashboard do
     state_display = format_cell(to_string(state), @running_stage_width)
     session = running_entry.session_id |> compact_session_id() |> format_cell(@running_session_width)
     pid = format_cell(running_entry.codex_app_server_pid || "n/a", @running_pid_width)
+    runtime_label = compact_runtime_label(running_entry)
+    runtime_display = format_cell(runtime_label, @running_runtime_width)
     total_tokens = running_entry.codex_total_tokens || 0
     runtime_seconds = running_entry.runtime_seconds || 0
     turn_count = Map.get(running_entry, :turn_count, 0)
@@ -620,6 +623,8 @@ defmodule SymphonyElixir.StatusDashboard do
       colorize(state_display, status_color),
       " ",
       colorize(pid, @ansi_yellow),
+      " ",
+      colorize(runtime_display, @ansi_green),
       " ",
       colorize(age, @ansi_magenta),
       " ",
@@ -742,6 +747,7 @@ defmodule SymphonyElixir.StatusDashboard do
         format_cell("ID", @running_id_width),
         format_cell("STAGE", @running_stage_width),
         format_cell("PID", @running_pid_width),
+        format_cell("RUNTIME", @running_runtime_width),
         format_cell("AGE / TURN", @running_age_width),
         format_cell("TOKENS", @running_tokens_width),
         format_cell("SESSION", @running_session_width),
@@ -757,10 +763,11 @@ defmodule SymphonyElixir.StatusDashboard do
       @running_id_width +
         @running_stage_width +
         @running_pid_width +
+        @running_runtime_width +
         @running_age_width +
         @running_tokens_width +
         @running_session_width +
-        running_event_width + 6
+        running_event_width + 7
 
     "│   " <> colorize(String.duplicate("─", separator_width), @ansi_gray)
   end
@@ -778,6 +785,7 @@ defmodule SymphonyElixir.StatusDashboard do
     @running_id_width +
       @running_stage_width +
       @running_pid_width +
+      @running_runtime_width +
       @running_age_width +
       @running_tokens_width +
       @running_session_width
@@ -826,6 +834,16 @@ defmodule SymphonyElixir.StatusDashboard do
       value
     else
       String.slice(value, 0, width - 3) <> "..."
+    end
+  end
+
+  defp compact_runtime_label(entry) do
+    profile = Map.get(entry, :runtime_profile, "codex")
+    adapter = Map.get(entry, :runtime_adapter, "direct")
+
+    case adapter do
+      "direct" -> profile
+      _ -> "#{profile}/#{adapter}"
     end
   end
 

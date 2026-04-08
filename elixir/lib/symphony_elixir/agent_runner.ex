@@ -1,10 +1,15 @@
 defmodule SymphonyElixir.AgentRunner do
   @moduledoc """
-  Executes a single Linear issue in its workspace with Codex.
+  Executes a single Linear issue in its workspace via a resolved runtime adapter.
+
+  When a `Runtime.Profile` is provided (via `:runtime_profile` opt), execution
+  routes through the adapter lifecycle (`start_session/3`, `run_turn/4`,
+  `stop_session/1`). Otherwise falls back to the direct `Codex.AppServer` path.
   """
 
   require Logger
   alias SymphonyElixir.Codex.AppServer
+  alias SymphonyElixir.Runtime.Profile, as: RuntimeProfile
   alias SymphonyElixir.{Config, Linear.Issue, PromptBuilder, Tracker, Workspace}
 
   @type worker_host :: String.t() | nil
@@ -35,7 +40,13 @@ defmodule SymphonyElixir.AgentRunner do
 
         try do
           with :ok <- Workspace.run_before_run_hook(workspace, issue, worker_host) do
-            run_codex_turns(workspace, issue, codex_update_recipient, opts, worker_host)
+            case Keyword.get(opts, :runtime_profile) do
+              %RuntimeProfile{} = profile ->
+                run_adapter_turns(profile, workspace, issue, codex_update_recipient, opts, worker_host)
+
+              _ ->
+                run_codex_turns(workspace, issue, codex_update_recipient, opts, worker_host)
+            end
           end
         after
           Workspace.run_after_run_hook(workspace, issue, worker_host)
@@ -59,6 +70,84 @@ defmodule SymphonyElixir.AgentRunner do
   end
 
   defp send_codex_update(_recipient, _issue, _message), do: :ok
+
+  # ── Adapter-based execution path ──────────────────────────────────────
+
+  defp run_adapter_turns(profile, workspace, issue, codex_update_recipient, opts, worker_host) do
+    adapter = profile.adapter_module
+    max_turns = Keyword.get(opts, :max_turns, Config.settings!().agent.max_turns)
+    issue_state_fetcher = Keyword.get(opts, :issue_state_fetcher, &Tracker.fetch_issue_states_by_ids/1)
+
+    with {:ok, session} <- adapter.start_session(profile.config, workspace, worker_host: worker_host) do
+      try do
+        send_adapter_runtime_update(codex_update_recipient, issue, adapter, session)
+        do_run_adapter_turns(adapter, session, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, 1, max_turns)
+      after
+        adapter.stop_session(session)
+      end
+    end
+  end
+
+  defp do_run_adapter_turns(adapter, session, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, turn_number, max_turns) do
+    prompt = build_turn_prompt(issue, opts, turn_number, max_turns)
+
+    with {:ok, turn_result} <-
+           adapter.run_turn(
+             session,
+             prompt,
+             issue,
+             on_message: codex_message_handler(codex_update_recipient, issue)
+           ) do
+      updated_session = Map.get(turn_result, :session, session)
+      metadata = adapter.runtime_metadata(updated_session)
+
+      Logger.info("Completed agent run for #{issue_context(issue)} adapter=#{inspect(adapter)} profile=#{metadata[:profile_name]} workspace=#{workspace} turn=#{turn_number}/#{max_turns}")
+
+      send_adapter_runtime_update(codex_update_recipient, issue, adapter, updated_session)
+
+      case continue_with_issue?(issue, issue_state_fetcher) do
+        {:continue, refreshed_issue} when turn_number < max_turns ->
+          Logger.info("Continuing agent run for #{issue_context(refreshed_issue)} after normal turn completion turn=#{turn_number}/#{max_turns}")
+
+          do_run_adapter_turns(
+            adapter,
+            updated_session,
+            workspace,
+            refreshed_issue,
+            codex_update_recipient,
+            opts,
+            issue_state_fetcher,
+            turn_number + 1,
+            max_turns
+          )
+
+        {:continue, refreshed_issue} ->
+          Logger.info("Reached agent.max_turns for #{issue_context(refreshed_issue)} with issue still active; returning control to orchestrator")
+          :ok
+
+        {:done, _refreshed_issue} ->
+          :ok
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    end
+  end
+
+  defp send_adapter_runtime_update(recipient, %Issue{id: issue_id}, adapter, session)
+       when is_binary(issue_id) and is_pid(recipient) do
+    metadata = adapter.runtime_metadata(session)
+
+    send(recipient, {:worker_runtime_update, issue_id, %{
+      runtime_metadata: metadata
+    }})
+
+    :ok
+  end
+
+  defp send_adapter_runtime_update(_recipient, _issue, _adapter, _session), do: :ok
+
+  # ── Legacy Codex fallback & shared helpers ───────────────────────────
 
   defp send_worker_runtime_info(recipient, %Issue{id: issue_id}, worker_host, workspace)
        when is_binary(issue_id) and is_pid(recipient) and is_binary(workspace) do

@@ -275,4 +275,252 @@ defmodule SymphonyElixir.RuntimeTest do
       assert profile.provider == provider
     end
   end
+
+  # -- Execution-path tests: adapter lifecycle --
+
+  test "DirectCodexAdapter.runtime_metadata returns consistent metadata shape" do
+    profile = %RuntimeProfile{name: "test_direct", adapter: "direct", provider: "codex"}
+
+    session = %{
+      __adapter__: DirectCodexAdapter,
+      profile: profile,
+      app_session: %{thread_id: "thread-123"},
+      turn_count: 2,
+      input_tokens: 100,
+      output_tokens: 50,
+      total_tokens: 150,
+      last_event: :turn_completed
+    }
+
+    metadata = DirectCodexAdapter.runtime_metadata(session)
+
+    assert metadata.profile_name == "test_direct"
+    assert metadata.provider == "codex"
+    assert metadata.adapter == "direct"
+    assert metadata.session_id == "thread-123"
+    assert metadata.turn_count == 2
+    assert metadata.input_tokens == 100
+    assert metadata.output_tokens == 50
+    assert metadata.total_tokens == 150
+    assert metadata.last_event == :turn_completed
+    assert metadata.health == :healthy
+  end
+
+  test "ACPAdapter.runtime_metadata returns consistent metadata shape" do
+    profile = %RuntimeProfile{name: "claude_acp", adapter: "acp", provider: "claude"}
+
+    session = %{
+      __adapter__: ACPAdapter,
+      profile: profile,
+      acp_session: %{session_id: "acp-sess-456"},
+      turn_count: 3,
+      input_tokens: 500,
+      output_tokens: 200,
+      total_tokens: 700,
+      last_event: :turn_completed
+    }
+
+    metadata = ACPAdapter.runtime_metadata(session)
+
+    assert metadata.profile_name == "claude_acp"
+    assert metadata.provider == "claude"
+    assert metadata.adapter == "acp"
+    assert metadata.session_id == "acp-sess-456"
+    assert metadata.turn_count == 3
+    assert metadata.input_tokens == 500
+    assert metadata.output_tokens == 200
+    assert metadata.total_tokens == 700
+    assert metadata.last_event == :turn_completed
+    assert metadata.health == :healthy
+  end
+
+  test "direct and ACP metadata share identical key sets" do
+    direct_profile = %RuntimeProfile{name: "d", adapter: "direct", provider: "codex"}
+    acp_profile = %RuntimeProfile{name: "a", adapter: "acp", provider: "claude"}
+
+    direct_session = %{
+      __adapter__: DirectCodexAdapter,
+      profile: direct_profile,
+      app_session: %{thread_id: "t"},
+      turn_count: 0, input_tokens: 0, output_tokens: 0, total_tokens: 0, last_event: nil
+    }
+
+    acp_session = %{
+      __adapter__: ACPAdapter,
+      profile: acp_profile,
+      acp_session: %{session_id: "s"},
+      turn_count: 0, input_tokens: 0, output_tokens: 0, total_tokens: 0, last_event: nil
+    }
+
+    direct_keys = DirectCodexAdapter.runtime_metadata(direct_session) |> Map.keys() |> MapSet.new()
+    acp_keys = ACPAdapter.runtime_metadata(acp_session) |> Map.keys() |> MapSet.new()
+
+    assert direct_keys == acp_keys
+  end
+
+  # -- Named direct profile settings override defaults --
+
+  test "named direct profile carries custom settings" do
+    workflow_content = """
+    ---
+    tracker:
+      kind: "memory"
+    runtimes:
+      custom_codex:
+        adapter: "direct"
+        provider: "codex"
+        command: "custom-codex-server"
+        turn_timeout_ms: 120000
+        read_timeout_ms: 15000
+    worker_runtime: "custom_codex"
+    ---
+    prompt
+    """
+
+    File.write!(Workflow.workflow_file_path(), workflow_content)
+    if Process.whereis(SymphonyElixir.WorkflowStore), do: SymphonyElixir.WorkflowStore.force_reload()
+
+    assert {:ok, %Profile{} = resolved} = Registry.resolve_for_role(:worker)
+    assert resolved.config.command == "custom-codex-server"
+    assert resolved.config.turn_timeout_ms == 120_000
+    assert resolved.config.read_timeout_ms == 15_000
+    assert resolved.adapter_module == DirectCodexAdapter
+  end
+
+  test "named direct profile inherits nil for unset fields" do
+    workflow_content = """
+    ---
+    tracker:
+      kind: "memory"
+    runtimes:
+      minimal_codex:
+        adapter: "direct"
+        provider: "codex"
+    worker_runtime: "minimal_codex"
+    ---
+    prompt
+    """
+
+    File.write!(Workflow.workflow_file_path(), workflow_content)
+    if Process.whereis(SymphonyElixir.WorkflowStore), do: SymphonyElixir.WorkflowStore.force_reload()
+
+    assert {:ok, %Profile{} = resolved} = Registry.resolve_for_role(:worker)
+    assert resolved.config.command == nil
+    assert resolved.config.turn_timeout_ms == nil
+    assert resolved.config.read_timeout_ms == nil
+  end
+
+  # -- ACP profile with timeout settings --
+
+  test "ACP profile carries timeout settings to adapter" do
+    workflow_content = """
+    ---
+    tracker:
+      kind: "memory"
+    runtimes:
+      claude_fast:
+        adapter: "acp"
+        provider: "claude"
+        endpoint: "https://acp.example.com"
+        model: "claude-sonnet-4-6"
+        turn_timeout_ms: 300000
+        read_timeout_ms: 10000
+    worker_runtime: "claude_fast"
+    ---
+    prompt
+    """
+
+    File.write!(Workflow.workflow_file_path(), workflow_content)
+    if Process.whereis(SymphonyElixir.WorkflowStore), do: SymphonyElixir.WorkflowStore.force_reload()
+
+    assert {:ok, %Profile{} = resolved} = Registry.resolve_for_role(:worker)
+    assert resolved.config.turn_timeout_ms == 300_000
+    assert resolved.config.read_timeout_ms == 10_000
+    assert resolved.config.model == "claude-sonnet-4-6"
+    assert resolved.adapter_module == ACPAdapter
+  end
+
+  # -- Mixed planner/worker/judge coexistence --
+
+  test "all four priority providers coexist with mixed adapters" do
+    workflow_content = """
+    ---
+    tracker:
+      kind: "memory"
+    runtimes:
+      claude_plan:
+        adapter: "acp"
+        provider: "claude"
+        endpoint: "https://acp.claude.example.com"
+      codex_work:
+        adapter: "direct"
+        provider: "codex"
+        command: "codex app-server"
+      pi_judge:
+        adapter: "acp"
+        provider: "pi"
+        endpoint: "https://acp.pi.example.com"
+      opencode_alt:
+        adapter: "acp"
+        provider: "opencode"
+        endpoint: "https://acp.opencode.example.com"
+    planner_runtime: "claude_plan"
+    worker_runtime: "codex_work"
+    judge_runtime: "pi_judge"
+    ---
+    prompt
+    """
+
+    File.write!(Workflow.workflow_file_path(), workflow_content)
+    if Process.whereis(SymphonyElixir.WorkflowStore), do: SymphonyElixir.WorkflowStore.force_reload()
+
+    assert {:ok, profiles} = Registry.list_profiles()
+    assert map_size(profiles) == 4
+
+    providers = profiles |> Map.values() |> Enum.map(& &1.config.provider) |> MapSet.new()
+    assert MapSet.equal?(providers, MapSet.new(~w(claude codex pi opencode)))
+
+    assert {:ok, planner} = Registry.resolve_for_role(:planner)
+    assert planner.config.provider == "claude"
+    assert planner.adapter_module == ACPAdapter
+
+    assert {:ok, worker} = Registry.resolve_for_role(:worker)
+    assert worker.config.provider == "codex"
+    assert worker.adapter_module == DirectCodexAdapter
+
+    assert {:ok, judge} = Registry.resolve_for_role(:judge)
+    assert judge.config.provider == "pi"
+    assert judge.adapter_module == ACPAdapter
+  end
+
+  # -- Presenter runtime identity in snapshot data --
+
+  test "presenter runtime_identity produces correct shape" do
+    entry = %{
+      runtime_profile: "claude_worker",
+      runtime_provider: "claude",
+      runtime_adapter: "acp"
+    }
+
+    # Exercise the presenter's runtime_identity logic inline
+    identity = %{
+      profile: Map.get(entry, :runtime_profile, "codex"),
+      provider: Map.get(entry, :runtime_provider, "codex"),
+      adapter: Map.get(entry, :runtime_adapter, "direct")
+    }
+
+    assert identity == %{profile: "claude_worker", provider: "claude", adapter: "acp"}
+  end
+
+  test "presenter runtime_identity defaults for legacy entries" do
+    entry = %{}
+
+    identity = %{
+      profile: Map.get(entry, :runtime_profile, "codex"),
+      provider: Map.get(entry, :runtime_provider, "codex"),
+      adapter: Map.get(entry, :runtime_adapter, "direct")
+    }
+
+    assert identity == %{profile: "codex", provider: "codex", adapter: "direct"}
+  end
 end

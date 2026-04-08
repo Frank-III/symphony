@@ -5,6 +5,11 @@ defmodule SymphonyElixir.Runtime.Registry do
   Config-driven and stateless — reads from `Config.Schema` on each call
   so config reloads take effect immediately. Only add process state
   when runtime health tracking requires it.
+
+  Currently only the `:worker` role has an execution launcher
+  (`AgentRunner` via `Orchestrator`). The `:planner` and `:judge` roles
+  are supported in config and registry resolution so downstream
+  consumers can adopt them without config changes.
   """
 
   alias SymphonyElixir.Config

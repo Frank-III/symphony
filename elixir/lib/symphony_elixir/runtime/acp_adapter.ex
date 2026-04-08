@@ -24,7 +24,9 @@ defmodule SymphonyElixir.Runtime.ACPAdapter do
           auth: profile.auth,
           model: profile.model,
           provider: profile.provider,
-          workspace: workspace
+          workspace: workspace,
+          turn_timeout_ms: profile.turn_timeout_ms,
+          read_timeout_ms: profile.read_timeout_ms
         ] ++ Keyword.take(opts, [:worker_host])
 
       case ACPClient.create_session(endpoint, client_opts) do
