@@ -512,7 +512,6 @@ defmodule SymphonyElixir.RuntimeTest do
     script = Path.join(workspace, "fake_acp_agent")
 
     File.write!(script, """
-    #!/usr/bin/env bash
     IFS= read -r _line
     response_1='{"jsonrpc":"2.0","id":1,"result":'
     response_1="${response_1}"'{"protocolVersion":1,"agentCapabilities":{},"authMethods":[]}}'
@@ -534,7 +533,8 @@ defmodule SymphonyElixir.RuntimeTest do
       adapter: "acp",
       provider: "codex",
       transport: "stdio",
-      command: script,
+      command: "/bin/sh",
+      args: [script],
       cwd: workspace,
       read_timeout_ms: 1_000,
       turn_timeout_ms: 1_000
