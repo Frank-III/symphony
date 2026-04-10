@@ -144,16 +144,22 @@ defmodule SymphonyElixir.Orchestrator do
               })
 
             _ ->
-              Logger.warning("Agent task exited for issue_id=#{issue_id} session_id=#{session_id} reason=#{inspect(reason)}; scheduling retry")
+              if non_retryable_agent_exit_reason?(reason) do
+                Logger.error("Agent task failed for issue_id=#{issue_id} session_id=#{session_id} reason=#{inspect(reason)}; not retrying non-retryable runtime configuration failure")
 
-              next_attempt = next_retry_attempt_from_running(running_entry)
+                complete_issue(state, issue_id)
+              else
+                Logger.warning("Agent task exited for issue_id=#{issue_id} session_id=#{session_id} reason=#{inspect(reason)}; scheduling retry")
 
-              schedule_issue_retry(state, issue_id, next_attempt, %{
-                identifier: running_entry.identifier,
-                error: "agent exited: #{inspect(reason)}",
-                worker_host: Map.get(running_entry, :worker_host),
-                workspace_path: Map.get(running_entry, :workspace_path)
-              })
+                next_attempt = next_retry_attempt_from_running(running_entry)
+
+                schedule_issue_retry(state, issue_id, next_attempt, %{
+                  identifier: running_entry.identifier,
+                  error: "agent exited: #{inspect(reason)}",
+                  worker_host: Map.get(running_entry, :worker_host),
+                  workspace_path: Map.get(running_entry, :workspace_path)
+                })
+              end
           end
 
         Logger.info("Agent task finished for issue_id=#{issue_id} session_id=#{session_id} reason=#{inspect(reason)}")
@@ -174,6 +180,11 @@ defmodule SymphonyElixir.Orchestrator do
           running_entry
           |> maybe_put_runtime_value(:worker_host, runtime_info[:worker_host])
           |> maybe_put_runtime_value(:workspace_path, runtime_info[:workspace_path])
+          |> maybe_put_runtime_value(:runtime_profile, runtime_info[:profile_name])
+          |> maybe_put_runtime_value(:runtime_provider, runtime_info[:provider])
+          |> maybe_put_runtime_value(:runtime_adapter, runtime_info[:adapter] || runtime_info[:protocol])
+          |> maybe_put_runtime_value(:runtime_transport, runtime_info[:transport])
+          |> maybe_put_runtime_value(:runtime_display_name, runtime_info[:display_name])
 
         notify_dashboard()
         {:noreply, %{state | running: Map.put(running, issue_id, updated_running_entry)}}
@@ -749,7 +760,9 @@ defmodule SymphonyElixir.Orchestrator do
             started_at: DateTime.utc_now(),
             runtime_profile: runtime_info.profile_name,
             runtime_provider: runtime_info.provider,
-            runtime_adapter: runtime_info.adapter
+            runtime_adapter: runtime_info.adapter,
+            runtime_transport: runtime_info.transport,
+            runtime_display_name: runtime_info.display_name
           })
 
         %{
@@ -981,13 +994,46 @@ defmodule SymphonyElixir.Orchestrator do
     %{
       profile_name: resolved.config.name,
       provider: resolved.config.provider,
-      adapter: resolved.config.adapter
+      adapter: resolved.config.adapter,
+      transport: resolved_runtime_transport(resolved.config),
+      display_name: resolved.config.display_name
     }
   end
 
   defp runtime_info_from_resolved(:fallback) do
-    %{profile_name: "codex", provider: "codex", adapter: "direct"}
+    %{profile_name: "codex", provider: "codex", adapter: "direct", transport: "stdio", display_name: nil}
   end
+
+  defp non_retryable_agent_exit_reason?(reason) do
+    reason
+    |> agent_runner_error_reason()
+    |> non_retryable_agent_runner_error?()
+  end
+
+  defp agent_runner_error_reason({{%AgentRunner.Error{reason: reason}, _stacktrace}, _origin}), do: reason
+  defp agent_runner_error_reason({%AgentRunner.Error{reason: reason}, _stacktrace}), do: reason
+  defp agent_runner_error_reason(%AgentRunner.Error{reason: reason}), do: reason
+  defp agent_runner_error_reason(_reason), do: nil
+
+  defp non_retryable_agent_runner_error?({:acp_config_error, _profile_name, _detail}), do: true
+  defp non_retryable_agent_runner_error?({:undefined_runtime, _name}), do: true
+  defp non_retryable_agent_runner_error?({:unknown_adapter, _adapter}), do: true
+  defp non_retryable_agent_runner_error?({:invalid_workflow_config, _message}), do: true
+  defp non_retryable_agent_runner_error?(_reason), do: false
+
+  defp resolved_runtime_transport(%{transport: transport}) when is_binary(transport) and transport != "",
+    do: transport
+
+  defp resolved_runtime_transport(%{adapter: "acp", endpoint: endpoint})
+       when is_binary(endpoint) and endpoint != "",
+       do: "http"
+
+  defp resolved_runtime_transport(%{adapter: "acp", command: command})
+       when is_binary(command) and command != "",
+       do: "stdio"
+
+  defp resolved_runtime_transport(%{adapter: "direct"}), do: "stdio"
+  defp resolved_runtime_transport(_profile), do: nil
 
   defp maybe_add_runtime_profile(opts, {:ok, profile}), do: Keyword.put(opts, :runtime_profile, profile)
   defp maybe_add_runtime_profile(opts, :fallback), do: opts
@@ -1041,6 +1087,11 @@ defmodule SymphonyElixir.Orchestrator do
       |> maybe_put_runtime_value(:session_id, metadata[:session_id])
       |> maybe_put_runtime_value(:turn_count, metadata[:turn_count])
       |> maybe_put_runtime_value(:last_codex_event, metadata[:last_event])
+      |> maybe_put_runtime_value(:runtime_profile, metadata[:profile_name])
+      |> maybe_put_runtime_value(:runtime_provider, metadata[:provider])
+      |> maybe_put_runtime_value(:runtime_adapter, metadata[:adapter])
+      |> maybe_put_runtime_value(:runtime_transport, metadata[:transport])
+      |> maybe_put_runtime_value(:runtime_display_name, metadata[:display_name])
       |> Map.put(:codex_input_tokens, new_input)
       |> Map.put(:codex_output_tokens, new_output)
       |> Map.put(:codex_total_tokens, new_total)
@@ -1203,7 +1254,9 @@ defmodule SymphonyElixir.Orchestrator do
           runtime_seconds: running_seconds(metadata.started_at, now),
           runtime_profile: Map.get(metadata, :runtime_profile, "codex"),
           runtime_provider: Map.get(metadata, :runtime_provider, "codex"),
-          runtime_adapter: Map.get(metadata, :runtime_adapter, "direct")
+          runtime_adapter: Map.get(metadata, :runtime_adapter, "direct"),
+          runtime_transport: Map.get(metadata, :runtime_transport, "stdio"),
+          runtime_display_name: Map.get(metadata, :runtime_display_name)
         }
       end)
 

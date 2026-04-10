@@ -223,12 +223,18 @@ defmodule SymphonyElixir.Config.Schema do
 
     @valid_adapters ~w(direct acp)
     @valid_providers ~w(codex claude pi opencode)
+    @valid_transports ~w(http stdio)
 
     embedded_schema do
       field(:name, :string)
       field(:adapter, :string, default: "direct")
       field(:provider, :string)
+      field(:display_name, :string)
+      field(:transport, :string)
       field(:command, :string)
+      field(:args, {:array, :string}, default: [])
+      field(:env, :map, default: %{})
+      field(:cwd, :string)
       field(:endpoint, :string)
       field(:auth, :string)
       field(:model, :string)
@@ -249,7 +255,12 @@ defmodule SymphonyElixir.Config.Schema do
           :name,
           :adapter,
           :provider,
+          :display_name,
+          :transport,
           :command,
+          :args,
+          :env,
+          :cwd,
           :endpoint,
           :auth,
           :model,
@@ -265,9 +276,17 @@ defmodule SymphonyElixir.Config.Schema do
       |> validate_required([:name, :adapter, :provider])
       |> validate_inclusion(:adapter, @valid_adapters)
       |> validate_inclusion(:provider, @valid_providers)
+      |> validate_transport()
       |> validate_number(:turn_timeout_ms, greater_than: 0)
       |> validate_number(:read_timeout_ms, greater_than: 0)
       |> validate_number(:stall_timeout_ms, greater_than_or_equal_to: 0)
+    end
+
+    defp validate_transport(changeset) do
+      case get_field(changeset, :transport) do
+        nil -> changeset
+        _transport -> validate_inclusion(changeset, :transport, @valid_transports, message: "must be one of http, stdio")
+      end
     end
   end
 

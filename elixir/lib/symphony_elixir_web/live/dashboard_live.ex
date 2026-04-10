@@ -133,6 +133,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                 <colgroup>
                   <col style="width: 12rem;" />
                   <col style="width: 8rem;" />
+                  <col style="width: 12rem;" />
                   <col style="width: 7.5rem;" />
                   <col style="width: 8.5rem;" />
                   <col />
@@ -142,9 +143,10 @@ defmodule SymphonyElixirWeb.DashboardLive do
                   <tr>
                     <th>Issue</th>
                     <th>State</th>
+                    <th>Runtime</th>
                     <th>Session</th>
-                    <th>Runtime / turns</th>
-                    <th>Codex update</th>
+                    <th>Elapsed / turns</th>
+                    <th>Agent update</th>
                     <th>Tokens</th>
                   </tr>
                 </thead>
@@ -160,6 +162,12 @@ defmodule SymphonyElixirWeb.DashboardLive do
                       <span class={state_badge_class(entry.state)}>
                         <%= entry.state %>
                       </span>
+                    </td>
+                    <td>
+                      <div class="detail-stack">
+                        <span class="event-text"><%= format_runtime_identity(entry.runtime) %></span>
+                        <span class="muted event-meta"><%= format_runtime_details(entry.runtime) %></span>
+                      </div>
                     </td>
                     <td>
                       <div class="session-stack">
@@ -278,6 +286,38 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   defp format_runtime_and_turns(started_at, _turn_count, now),
     do: format_runtime_seconds(runtime_seconds_from_started_at(started_at, now))
+
+  defp format_runtime_identity(nil), do: "codex"
+
+  defp format_runtime_identity(runtime) when is_map(runtime) do
+    case runtime_value(runtime, :display_name) do
+      nil -> runtime_value(runtime, :profile) || runtime_value(runtime, :provider) || "codex"
+      display_name -> display_name
+    end
+  end
+
+  defp format_runtime_identity(_runtime), do: "codex"
+
+  defp format_runtime_details(runtime) when is_map(runtime) do
+    [
+      runtime_value(runtime, :provider),
+      runtime_value(runtime, :adapter),
+      runtime_value(runtime, :transport)
+    ]
+    |> Enum.reject(&blank?/1)
+    |> case do
+      [] -> "codex / direct / stdio"
+      values -> Enum.join(values, " / ")
+    end
+  end
+
+  defp format_runtime_details(_runtime), do: "codex / direct / stdio"
+
+  defp runtime_value(runtime, key) when is_map(runtime) and is_atom(key) do
+    Map.get(runtime, key) || Map.get(runtime, Atom.to_string(key))
+  end
+
+  defp blank?(value), do: is_nil(value) or value == ""
 
   defp format_runtime_seconds(seconds) when is_number(seconds) do
     whole_seconds = max(trunc(seconds), 0)

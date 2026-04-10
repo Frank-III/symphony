@@ -18,6 +18,20 @@ defmodule SymphonyElixir.AgentRunner do
   alias SymphonyElixir.Runtime.Profile, as: RuntimeProfile
   alias SymphonyElixir.Runtime.Registry, as: RuntimeRegistry
 
+  defmodule Error do
+    @moduledoc """
+    Structured agent runner failure raised from worker task processes.
+    """
+
+    defexception [:reason, :message]
+
+    @impl true
+    def exception(opts) do
+      reason = Keyword.fetch!(opts, :reason)
+      %__MODULE__{reason: reason, message: "Agent run failed: #{inspect(reason)}"}
+    end
+  end
+
   @brainstorm_planner_attempts 2
   @artifact_poll_interval_ms 250
   @artifact_stop_grace_ms 1_000
@@ -38,6 +52,8 @@ defmodule SymphonyElixir.AgentRunner do
           profile_name: String.t() | nil,
           provider: String.t() | nil,
           protocol: String.t() | nil,
+          transport: String.t() | nil,
+          display_name: String.t() | nil,
           session: term(),
           workspace: Path.t(),
           worker_host: worker_host(),
@@ -61,8 +77,7 @@ defmodule SymphonyElixir.AgentRunner do
       {:error, reason} ->
         Logger.error("Agent run failed for #{issue_context(issue)} worker_runtime=#{worker_runtime} orchestration_mode=#{orchestration_mode}: #{inspect(reason)}")
 
-        raise RuntimeError,
-              "Agent run failed for #{issue_context(issue)} worker_runtime=#{worker_runtime} orchestration_mode=#{orchestration_mode}: #{inspect(reason)}"
+        raise Error, reason: reason
     end
   end
 
@@ -772,10 +787,10 @@ defmodule SymphonyElixir.AgentRunner do
          workspace,
          issue,
          update_recipient,
-        opts,
-        cycle,
-        max_cycles
-      ) do
+         opts,
+         cycle,
+         max_cycles
+       ) do
     role_opts = [planner_count: planner_count]
 
     artifact_timeout_ms =
@@ -849,6 +864,8 @@ defmodule SymphonyElixir.AgentRunner do
              profile_name: profile_name(profile),
              provider: profile_provider(profile),
              protocol: profile_protocol(profile),
+             transport: profile_transport(profile),
+             display_name: profile_display_name(profile),
              session: session,
              workspace: workspace,
              worker_host: worker_host,
@@ -868,6 +885,8 @@ defmodule SymphonyElixir.AgentRunner do
              profile_name: nil,
              provider: nil,
              protocol: nil,
+             transport: nil,
+             display_name: nil,
              session: session,
              workspace: workspace,
              worker_host: worker_host,
@@ -914,6 +933,8 @@ defmodule SymphonyElixir.AgentRunner do
       |> maybe_put_role_runtime_value(:profile_name, Map.get(role_session, :profile_name))
       |> maybe_put_role_runtime_value(:provider, Map.get(role_session, :provider))
       |> maybe_put_role_runtime_value(:protocol, Map.get(role_session, :protocol))
+      |> maybe_put_role_runtime_value(:transport, Map.get(role_session, :transport))
+      |> maybe_put_role_runtime_value(:display_name, Map.get(role_session, :display_name))
       |> Map.merge(role_payload)
     )
 
@@ -1681,7 +1702,10 @@ defmodule SymphonyElixir.AgentRunner do
          runtime: worker_runtime_name(runtime_profile),
          profile_name: worker_runtime_profile_name(runtime_profile),
          provider: worker_runtime_provider(runtime_profile),
-         protocol: worker_runtime_protocol(runtime_profile)
+         protocol: worker_runtime_protocol(runtime_profile),
+         adapter: worker_runtime_protocol(runtime_profile),
+         transport: worker_runtime_transport(runtime_profile),
+         display_name: worker_runtime_display_name(runtime_profile)
        }}
     )
 
@@ -1796,6 +1820,23 @@ defmodule SymphonyElixir.AgentRunner do
   defp profile_protocol(%RuntimeProfile{config: config}), do: config.adapter
   defp profile_protocol(_profile), do: nil
 
+  defp profile_transport(%RuntimeProfile{config: %{transport: transport}}) when is_binary(transport) and transport != "",
+    do: transport
+
+  defp profile_transport(%RuntimeProfile{config: %{adapter: "acp", endpoint: endpoint}})
+       when is_binary(endpoint) and endpoint != "",
+       do: "http"
+
+  defp profile_transport(%RuntimeProfile{config: %{adapter: "acp", command: command}})
+       when is_binary(command) and command != "",
+       do: "stdio"
+
+  defp profile_transport(%RuntimeProfile{config: %{adapter: "direct"}}), do: "stdio"
+  defp profile_transport(_profile), do: nil
+
+  defp profile_display_name(%RuntimeProfile{config: config}), do: config.display_name
+  defp profile_display_name(_profile), do: nil
+
   defp profile_runtime_name(%RuntimeProfile{config: config}) do
     config.name || config.provider || "codex"
   end
@@ -1813,6 +1854,12 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp worker_runtime_protocol({:ok, profile}), do: profile_protocol(profile)
   defp worker_runtime_protocol(:fallback), do: "direct"
+
+  defp worker_runtime_transport({:ok, profile}), do: profile_transport(profile)
+  defp worker_runtime_transport(:fallback), do: "stdio"
+
+  defp worker_runtime_display_name({:ok, profile}), do: profile_display_name(profile)
+  defp worker_runtime_display_name(:fallback), do: nil
 
   defp maybe_put_role_runtime_value(map, _key, nil), do: map
   defp maybe_put_role_runtime_value(map, key, value), do: Map.put(map, key, value)
