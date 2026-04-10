@@ -118,6 +118,13 @@ Notes:
 - ACP profiles can use `transport: stdio` with a local command, or `transport: http` with an
   endpoint. Missing commands, endpoints, unsupported transports, and startup or handshake failures
   are surfaced as structured ACP errors.
+- Provider-specific stdio notes:
+  - `provider: claude` currently needs an external ACP adapter such as `claude-agent-acp`.
+  - `provider: codex` currently needs an external ACP adapter such as `codex-acp`.
+  - `provider: opencode` can use the native `opencode acp` subcommand.
+  - `provider: pi` is config-supported by Symphony, but this repo does not currently bundle or
+    verify a Pi ACP adapter. Treat Pi as bring-your-own ACP server until PAN-92 smoke testing is
+    complete.
 - Multiple ACP-backed runtimes can be configured at the same time alongside direct Codex profiles:
 
 ```yaml
@@ -127,24 +134,13 @@ runtimes:
     provider: claude
     display_name: Claude ACP
     transport: stdio
-    command: claude
-    args: ["--acp"]
-    env:
-      CLAUDE_CODE_ENTRYPOINT: stdio
+    command: claude-agent-acp
   codex_acp:
     adapter: acp
     provider: codex
     display_name: Codex ACP
     transport: stdio
-    command: codex
-    args: ["acp"]
-  pi_acp:
-    adapter: acp
-    provider: pi
-    display_name: Pi ACP
-    transport: stdio
-    command: pi
-    args: ["acp"]
+    command: codex-acp
   opencode_acp:
     adapter: acp
     provider: opencode
