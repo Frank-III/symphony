@@ -16,6 +16,8 @@ defmodule SymphonyElixir.Runtime.Adapter do
           optional(:profile_name) => String.t(),
           optional(:provider) => String.t(),
           optional(:adapter) => String.t(),
+          optional(:transport) => String.t() | nil,
+          optional(:display_name) => String.t() | nil,
           optional(:session_id) => String.t(),
           optional(:turn_count) => non_neg_integer(),
           optional(:input_tokens) => non_neg_integer(),

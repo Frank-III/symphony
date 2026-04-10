@@ -13,6 +13,7 @@ defmodule SymphonyElixir.Runtime.ACPClient do
   @default_read_timeout_ms 30_000
 
   @type session :: %{
+          transport: String.t(),
           session_id: String.t(),
           endpoint: String.t(),
           auth: String.t() | nil,
@@ -46,6 +47,7 @@ defmodule SymphonyElixir.Runtime.ACPClient do
       {:ok, %{"session_id" => session_id}} ->
         {:ok,
          %{
+           transport: "http",
            session_id: session_id,
            endpoint: endpoint,
            auth: auth,

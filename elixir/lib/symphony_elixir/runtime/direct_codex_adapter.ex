@@ -74,6 +74,8 @@ defmodule SymphonyElixir.Runtime.DirectCodexAdapter do
       profile_name: profile.name,
       provider: profile.provider,
       adapter: profile.adapter,
+      transport: "stdio",
+      display_name: profile.display_name,
       session_id: get_in(session, [:app_session, :thread_id]),
       turn_count: session.turn_count,
       input_tokens: session.input_tokens,

@@ -11,13 +11,27 @@ defmodule SymphonyElixir.Runtime.ACPAdapter do
 
   alias SymphonyElixir.Config.Schema.RuntimeProfile
   alias SymphonyElixir.Runtime.ACPClient
+  alias SymphonyElixir.Runtime.ACPStdioClient
 
   @impl true
   def start_session(%RuntimeProfile{} = profile, workspace, opts \\ []) do
+    case transport_for(profile) do
+      {:ok, "http"} ->
+        start_http_session(profile, workspace, opts)
+
+      {:ok, "stdio"} ->
+        start_stdio_session(profile, workspace, opts)
+
+      {:error, _} = error ->
+        error
+    end
+  end
+
+  defp start_http_session(%RuntimeProfile{} = profile, workspace, opts) do
     endpoint = profile.endpoint
 
     if is_nil(endpoint) or endpoint == "" do
-      {:error, {:missing_endpoint, profile.name}}
+      {:error, {:acp_config_error, profile.name, :missing_endpoint}}
     else
       client_opts =
         [
@@ -49,6 +63,26 @@ defmodule SymphonyElixir.Runtime.ACPAdapter do
     end
   end
 
+  defp start_stdio_session(%RuntimeProfile{} = profile, workspace, opts) do
+    case ACPStdioClient.create_session(profile, workspace, opts) do
+      {:ok, acp_session} ->
+        {:ok,
+         %{
+           __adapter__: __MODULE__,
+           profile: profile,
+           acp_session: acp_session,
+           turn_count: 0,
+           input_tokens: 0,
+           output_tokens: 0,
+           total_tokens: 0,
+           last_event: nil
+         }}
+
+      {:error, _} = error ->
+        error
+    end
+  end
+
   @impl true
   def run_turn(session, prompt, _issue, opts \\ []) do
     on_message = Keyword.get(opts, :on_message, fn _msg -> :ok end)
@@ -57,7 +91,7 @@ defmodule SymphonyElixir.Runtime.ACPAdapter do
       on_message.(%{type: event.type, data: event})
     end
 
-    case ACPClient.execute_turn(session.acp_session, prompt, on_event: on_event) do
+    case execute_turn(session.acp_session, prompt, on_event: on_event) do
       {:ok, turn_result} ->
         updated_session = %{
           session
@@ -80,7 +114,7 @@ defmodule SymphonyElixir.Runtime.ACPAdapter do
 
   @impl true
   def stop_session(session) do
-    ACPClient.destroy_session(session.acp_session)
+    stop_acp_session(session.acp_session)
     :ok
   end
 
@@ -92,6 +126,8 @@ defmodule SymphonyElixir.Runtime.ACPAdapter do
       profile_name: profile.name,
       provider: profile.provider,
       adapter: profile.adapter,
+      transport: Map.get(session.acp_session, :transport, transport_for!(profile)),
+      display_name: profile.display_name,
       session_id: session.acp_session.session_id,
       turn_count: session.turn_count,
       input_tokens: session.input_tokens,
@@ -100,5 +136,27 @@ defmodule SymphonyElixir.Runtime.ACPAdapter do
       last_event: session.last_event,
       health: :healthy
     }
+  end
+
+  defp execute_turn(%{transport: "stdio"} = acp_session, prompt, opts) do
+    ACPStdioClient.execute_turn(acp_session, prompt, opts)
+  end
+
+  defp execute_turn(acp_session, prompt, opts), do: ACPClient.execute_turn(acp_session, prompt, opts)
+
+  defp stop_acp_session(%{transport: "stdio"} = acp_session), do: ACPStdioClient.stop_session(acp_session)
+  defp stop_acp_session(acp_session), do: ACPClient.destroy_session(acp_session)
+
+  defp transport_for(%RuntimeProfile{transport: transport}) when transport in ["http", "stdio"], do: {:ok, transport}
+  defp transport_for(%RuntimeProfile{name: name, transport: transport}) when is_binary(transport), do: {:error, {:acp_config_error, name, {:invalid_transport, transport}}}
+  defp transport_for(%RuntimeProfile{endpoint: endpoint}) when is_binary(endpoint) and endpoint != "", do: {:ok, "http"}
+  defp transport_for(%RuntimeProfile{command: command}) when is_binary(command) and command != "", do: {:ok, "stdio"}
+  defp transport_for(%RuntimeProfile{name: name}), do: {:error, {:acp_config_error, name, :missing_transport_config}}
+
+  defp transport_for!(profile) do
+    case transport_for(profile) do
+      {:ok, transport} -> transport
+      {:error, _} -> nil
+    end
   end
 end

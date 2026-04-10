@@ -67,6 +67,73 @@ defmodule SymphonyElixir.RuntimeTest do
     assert settings.worker_runtime == "codex_direct"
   end
 
+  test "config with multiple ACP stdio runtimes parses transport fields" do
+    workflow_content = """
+    ---
+    tracker:
+      kind: "memory"
+    runtimes:
+      claude_acp:
+        adapter: "acp"
+        provider: "claude"
+        display_name: "Claude ACP"
+        transport: "stdio"
+        command: "claude"
+        args: ["--acp"]
+        env:
+          CLAUDE_CODE_ENTRYPOINT: "stdio"
+      codex_acp:
+        adapter: "acp"
+        provider: "codex"
+        display_name: "Codex ACP"
+        transport: "stdio"
+        command: "codex"
+        args: ["acp"]
+      pi_acp:
+        adapter: "acp"
+        provider: "pi"
+        transport: "stdio"
+        command: "pi"
+      opencode_acp:
+        adapter: "acp"
+        provider: "opencode"
+        transport: "stdio"
+        command: "opencode"
+    planner_runtimes: ["claude_acp", "codex_acp"]
+    worker_runtime: "opencode_acp"
+    judge_runtime: "pi_acp"
+    ---
+    prompt
+    """
+
+    File.write!(Workflow.workflow_file_path(), workflow_content)
+    if Process.whereis(SymphonyElixir.WorkflowStore), do: SymphonyElixir.WorkflowStore.force_reload()
+
+    assert {:ok, settings} = Config.settings()
+    assert map_size(settings.runtimes) == 4
+    assert settings.runtimes["claude_acp"].transport == "stdio"
+    assert settings.runtimes["claude_acp"].args == ["--acp"]
+    assert settings.runtimes["claude_acp"].env == %{"CLAUDE_CODE_ENTRYPOINT" => "stdio"}
+    assert settings.runtimes["opencode_acp"].display_name == nil
+    assert Config.brainstorm_planner_runtimes() == ["claude_acp", "codex_acp"]
+
+    assert {:ok, %Profile{} = worker} = Registry.resolve_for_role(:worker)
+    assert worker.config.name == "opencode_acp"
+    assert worker.adapter_module == ACPAdapter
+
+    assert {:ok, %Profile{} = planner_1} = Registry.resolve_by_name("claude_acp")
+    assert planner_1.config.provider == "claude"
+    assert planner_1.adapter_module == ACPAdapter
+
+    assert {:ok, %Profile{} = planner_2} = Registry.resolve_by_name("codex_acp")
+    assert planner_2.config.provider == "codex"
+    assert planner_2.adapter_module == ACPAdapter
+
+    assert {:ok, %Profile{} = judge} = Registry.resolve_for_role(:judge)
+    assert judge.config.name == "pi_acp"
+    assert judge.adapter_module == ACPAdapter
+  end
+
   test "role runtime referencing undefined profile fails validation" do
     workflow_content = """
     ---
@@ -103,6 +170,15 @@ defmodule SymphonyElixir.RuntimeTest do
              RuntimeProfile.changeset(%RuntimeProfile{}, invalid_provider) |> Ecto.Changeset.apply_action(:validate)
 
     assert changeset.errors[:provider]
+  end
+
+  test "RuntimeProfile changeset validates ACP transport" do
+    invalid_transport = %{"name" => "test", "adapter" => "acp", "provider" => "claude", "transport" => "socket"}
+
+    assert {:error, changeset} =
+             RuntimeProfile.changeset(%RuntimeProfile{}, invalid_transport) |> Ecto.Changeset.apply_action(:validate)
+
+    assert changeset.errors[:transport]
   end
 
   test "parse_runtime_profiles parses a map of profiles" do
@@ -297,6 +373,8 @@ defmodule SymphonyElixir.RuntimeTest do
     assert metadata.profile_name == "test_direct"
     assert metadata.provider == "codex"
     assert metadata.adapter == "direct"
+    assert metadata.transport == "stdio"
+    assert metadata.display_name == nil
     assert metadata.session_id == "thread-123"
     assert metadata.turn_count == 2
     assert metadata.input_tokens == 100
@@ -307,12 +385,12 @@ defmodule SymphonyElixir.RuntimeTest do
   end
 
   test "ACPAdapter.runtime_metadata returns consistent metadata shape" do
-    profile = %RuntimeProfile{name: "claude_acp", adapter: "acp", provider: "claude"}
+    profile = %RuntimeProfile{name: "claude_acp", adapter: "acp", provider: "claude", transport: "http", display_name: "Claude ACP"}
 
     session = %{
       __adapter__: ACPAdapter,
       profile: profile,
-      acp_session: %{session_id: "acp-sess-456"},
+      acp_session: %{session_id: "acp-sess-456", transport: "http"},
       turn_count: 3,
       input_tokens: 500,
       output_tokens: 200,
@@ -325,6 +403,8 @@ defmodule SymphonyElixir.RuntimeTest do
     assert metadata.profile_name == "claude_acp"
     assert metadata.provider == "claude"
     assert metadata.adapter == "acp"
+    assert metadata.transport == "http"
+    assert metadata.display_name == "Claude ACP"
     assert metadata.session_id == "acp-sess-456"
     assert metadata.turn_count == 3
     assert metadata.input_tokens == 500
@@ -336,26 +416,123 @@ defmodule SymphonyElixir.RuntimeTest do
 
   test "direct and ACP metadata share identical key sets" do
     direct_profile = %RuntimeProfile{name: "d", adapter: "direct", provider: "codex"}
-    acp_profile = %RuntimeProfile{name: "a", adapter: "acp", provider: "claude"}
+    acp_profile = %RuntimeProfile{name: "a", adapter: "acp", provider: "claude", transport: "http"}
 
     direct_session = %{
       __adapter__: DirectCodexAdapter,
       profile: direct_profile,
       app_session: %{thread_id: "t"},
-      turn_count: 0, input_tokens: 0, output_tokens: 0, total_tokens: 0, last_event: nil
+      turn_count: 0,
+      input_tokens: 0,
+      output_tokens: 0,
+      total_tokens: 0,
+      last_event: nil
     }
 
     acp_session = %{
       __adapter__: ACPAdapter,
       profile: acp_profile,
-      acp_session: %{session_id: "s"},
-      turn_count: 0, input_tokens: 0, output_tokens: 0, total_tokens: 0, last_event: nil
+      acp_session: %{session_id: "s", transport: "http"},
+      turn_count: 0,
+      input_tokens: 0,
+      output_tokens: 0,
+      total_tokens: 0,
+      last_event: nil
     }
 
     direct_keys = DirectCodexAdapter.runtime_metadata(direct_session) |> Map.keys() |> MapSet.new()
     acp_keys = ACPAdapter.runtime_metadata(acp_session) |> Map.keys() |> MapSet.new()
 
     assert direct_keys == acp_keys
+  end
+
+  test "ACPAdapter classifies stdio missing and non-executable commands" do
+    missing_profile = %RuntimeProfile{
+      name: "missing_stdio",
+      adapter: "acp",
+      provider: "claude",
+      transport: "stdio"
+    }
+
+    assert {:error, {:acp_config_error, "missing_stdio", :missing_command}} =
+             ACPAdapter.start_session(missing_profile, System.tmp_dir!())
+
+    non_executable = Path.join(System.tmp_dir!(), "symphony-acp-not-executable-#{System.unique_integer([:positive])}")
+    File.write!(non_executable, "#!/usr/bin/env bash\n")
+    File.chmod!(non_executable, 0o644)
+
+    try do
+      bad_profile = %RuntimeProfile{
+        name: "bad_stdio",
+        adapter: "acp",
+        provider: "claude",
+        transport: "stdio",
+        command: non_executable
+      }
+
+      assert {:error, {:acp_config_error, "bad_stdio", {:non_executable_command, ^non_executable}}} =
+               ACPAdapter.start_session(bad_profile, System.tmp_dir!())
+    after
+      File.rm(non_executable)
+    end
+  end
+
+  test "ACPAdapter classifies missing HTTP endpoint" do
+    profile = %RuntimeProfile{
+      name: "missing_http",
+      adapter: "acp",
+      provider: "claude",
+      transport: "http"
+    }
+
+    assert {:error, {:acp_config_error, "missing_http", :missing_endpoint}} =
+             ACPAdapter.start_session(profile, System.tmp_dir!())
+  end
+
+  test "ACPAdapter supports stdio JSON-RPC session and turn lifecycle" do
+    workspace = Path.join(System.tmp_dir!(), "symphony-acp-stdio-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(workspace)
+    script = Path.join(workspace, "fake_acp_agent")
+
+    File.write!(script, """
+    #!/usr/bin/env bash
+    IFS= read -r _line
+    printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":1,\"agentCapabilities\":{},\"authMethods\":[]}}'
+    IFS= read -r _line
+    printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"sessionId\":\"sess-stdio\"}}'
+    IFS= read -r _line
+    printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"sess-stdio\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"hello from stdio\"}}}}'
+    printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"stopReason\":\"end_turn\"}}'
+    """)
+
+    File.chmod!(script, 0o755)
+
+    profile = %RuntimeProfile{
+      name: "fake_stdio",
+      adapter: "acp",
+      provider: "codex",
+      transport: "stdio",
+      command: script,
+      cwd: workspace,
+      read_timeout_ms: 1_000,
+      turn_timeout_ms: 1_000
+    }
+
+    try do
+      assert {:ok, session} = ACPAdapter.start_session(profile, workspace)
+      assert session.acp_session.transport == "stdio"
+      assert session.acp_session.session_id == "sess-stdio"
+
+      assert {:ok, result} =
+               ACPAdapter.run_turn(session, "hello", %{identifier: "PAN-91", title: "ACP stdio fake"})
+
+      assert result.result["stopReason"] == "end_turn"
+      assert result.result["content"] == "hello from stdio"
+      assert result.session.turn_count == 1
+      ACPAdapter.stop_session(result.session)
+    after
+      File.rm_rf(workspace)
+    end
   end
 
   # -- Named direct profile settings override defaults --
@@ -499,17 +676,27 @@ defmodule SymphonyElixir.RuntimeTest do
     entry = %{
       runtime_profile: "claude_worker",
       runtime_provider: "claude",
-      runtime_adapter: "acp"
+      runtime_adapter: "acp",
+      runtime_transport: "stdio",
+      runtime_display_name: "Claude ACP"
     }
 
     # Exercise the presenter's runtime_identity logic inline
     identity = %{
       profile: Map.get(entry, :runtime_profile, "codex"),
       provider: Map.get(entry, :runtime_provider, "codex"),
-      adapter: Map.get(entry, :runtime_adapter, "direct")
+      adapter: Map.get(entry, :runtime_adapter, "direct"),
+      transport: Map.get(entry, :runtime_transport, "stdio"),
+      display_name: Map.get(entry, :runtime_display_name)
     }
 
-    assert identity == %{profile: "claude_worker", provider: "claude", adapter: "acp"}
+    assert identity == %{
+             profile: "claude_worker",
+             provider: "claude",
+             adapter: "acp",
+             transport: "stdio",
+             display_name: "Claude ACP"
+           }
   end
 
   test "presenter runtime_identity defaults for legacy entries" do
@@ -518,9 +705,11 @@ defmodule SymphonyElixir.RuntimeTest do
     identity = %{
       profile: Map.get(entry, :runtime_profile, "codex"),
       provider: Map.get(entry, :runtime_provider, "codex"),
-      adapter: Map.get(entry, :runtime_adapter, "direct")
+      adapter: Map.get(entry, :runtime_adapter, "direct"),
+      transport: Map.get(entry, :runtime_transport, "stdio"),
+      display_name: Map.get(entry, :runtime_display_name)
     }
 
-    assert identity == %{profile: "codex", provider: "codex", adapter: "direct"}
+    assert identity == %{profile: "codex", provider: "codex", adapter: "direct", transport: "stdio", display_name: nil}
   end
 end

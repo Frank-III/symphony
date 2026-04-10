@@ -110,6 +110,66 @@ Title: {{ issue.title }} Body: {{ issue.description }}
 Notes:
 
 - If a value is missing, defaults are used.
+- Runtime profiles can select direct or ACP-backed runtimes without orchestration code changes. The
+  role fields (`planner_runtime`, `planner_runtimes`, `worker_runtime`, and `judge_runtime`) point
+  at profile names under `runtimes`.
+- ACP profiles support `provider: claude`, `provider: codex`, `provider: pi`, and
+  `provider: opencode`. Cursor ACP is intentionally out of scope for this implementation pass.
+- ACP profiles can use `transport: stdio` with a local command, or `transport: http` with an
+  endpoint. Missing commands, endpoints, unsupported transports, and startup or handshake failures
+  are surfaced as structured ACP errors.
+- Multiple ACP-backed runtimes can be configured at the same time alongside direct Codex profiles:
+
+```yaml
+runtimes:
+  claude_acp:
+    adapter: acp
+    provider: claude
+    display_name: Claude ACP
+    transport: stdio
+    command: claude
+    args: ["--acp"]
+    env:
+      CLAUDE_CODE_ENTRYPOINT: stdio
+  codex_acp:
+    adapter: acp
+    provider: codex
+    display_name: Codex ACP
+    transport: stdio
+    command: codex
+    args: ["acp"]
+  pi_acp:
+    adapter: acp
+    provider: pi
+    display_name: Pi ACP
+    transport: stdio
+    command: pi
+    args: ["acp"]
+  opencode_acp:
+    adapter: acp
+    provider: opencode
+    display_name: OpenCode ACP
+    transport: stdio
+    command: opencode
+    args: ["acp"]
+  claude_acp_http:
+    adapter: acp
+    provider: claude
+    display_name: Claude ACP HTTP
+    transport: http
+    endpoint: http://127.0.0.1:8765
+    auth: $CLAUDE_ACP_TOKEN
+  codex_direct:
+    adapter: direct
+    provider: codex
+    command: codex app-server
+
+planner_runtimes: ["claude_acp", "codex_acp"]
+planner_runtime: claude_acp
+worker_runtime: opencode_acp
+judge_runtime: pi_acp
+```
+
 - Safer Codex defaults are used when policy fields are omitted:
   - `codex.approval_policy` defaults to `{"reject":{"sandbox_approval":true,"rules":true,"mcp_elicitations":true}}`
   - `codex.thread_sandbox` defaults to `workspace-write`

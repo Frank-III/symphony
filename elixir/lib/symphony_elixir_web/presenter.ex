@@ -184,7 +184,9 @@ defmodule SymphonyElixirWeb.Presenter do
     %{
       profile: Map.get(entry, :runtime_profile, "codex"),
       provider: Map.get(entry, :runtime_provider, "codex"),
-      adapter: Map.get(entry, :runtime_adapter, "direct")
+      adapter: Map.get(entry, :runtime_adapter, "direct"),
+      transport: Map.get(entry, :runtime_transport, "stdio"),
+      display_name: Map.get(entry, :runtime_display_name)
     }
   end
 
