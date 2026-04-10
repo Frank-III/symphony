@@ -422,8 +422,11 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "runtime" => %{
                    "adapter" => "direct",
                    "display_name" => nil,
+                   "pool" => ["codex"],
+                   "pool_index" => 0,
                    "profile" => "codex",
                    "provider" => "codex",
+                   "rotations" => 0,
                    "transport" => "stdio"
                  }
                }
@@ -435,6 +438,16 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "attempt" => 2,
                  "due_at" => state_payload["retrying"] |> List.first() |> Map.fetch!("due_at"),
                  "error" => "boom",
+                 "runtime" => %{
+                   "adapter" => "direct",
+                   "display_name" => nil,
+                   "pool" => ["codex"],
+                   "pool_index" => 0,
+                   "profile" => "codex",
+                   "provider" => "codex",
+                   "rotations" => 0,
+                   "transport" => "stdio"
+                 },
                  "worker_host" => nil,
                  "workspace_path" => nil
                }
@@ -474,8 +487,11 @@ defmodule SymphonyElixir.ExtensionsTest do
                "runtime" => %{
                  "adapter" => "direct",
                  "display_name" => nil,
+                 "pool" => ["codex"],
+                 "pool_index" => 0,
                  "profile" => "codex",
                  "provider" => "codex",
+                 "rotations" => 0,
                  "transport" => "stdio"
                }
              },
@@ -488,7 +504,23 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     conn = get(build_conn(), "/api/v1/MT-RETRY")
 
-    assert %{"status" => "retrying", "retry" => %{"attempt" => 2, "error" => "boom"}} =
+    assert %{
+             "status" => "retrying",
+             "retry" => %{
+               "attempt" => 2,
+               "error" => "boom",
+               "runtime" => %{
+                 "adapter" => "direct",
+                 "display_name" => nil,
+                 "pool" => ["codex"],
+                 "pool_index" => 0,
+                 "profile" => "codex",
+                 "provider" => "codex",
+                 "rotations" => 0,
+                 "transport" => "stdio"
+               }
+             }
+           } =
              json_response(conn, 200)
 
     conn = get(build_conn(), "/api/v1/MT-MISSING")

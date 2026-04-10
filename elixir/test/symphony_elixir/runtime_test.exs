@@ -14,6 +14,7 @@ defmodule SymphonyElixir.RuntimeTest do
     assert settings.runtimes == %{}
     assert settings.planner_runtime == nil
     assert settings.worker_runtime == nil
+    assert settings.worker_runtimes == []
     assert settings.judge_runtime == nil
   end
 
@@ -100,6 +101,7 @@ defmodule SymphonyElixir.RuntimeTest do
         args: ["acp"]
     planner_runtimes: ["claude_acp", "codex_acp"]
     worker_runtime: "opencode_acp"
+    worker_runtimes: ["codex_acp", "opencode_acp"]
     judge_runtime: "pi_acp"
     ---
     prompt
@@ -118,6 +120,7 @@ defmodule SymphonyElixir.RuntimeTest do
     assert settings.runtimes["opencode_acp"].display_name == "OpenCode ACP"
     assert settings.runtimes["opencode_acp"].args == ["acp"]
     assert Config.brainstorm_planner_runtimes() == ["claude_acp", "codex_acp"]
+    assert Config.runtime_pool(:worker) == ["opencode_acp", "codex_acp"]
 
     assert {:ok, %Profile{} = worker} = Registry.resolve_for_role(:worker)
     assert worker.config.name == "opencode_acp"
@@ -142,6 +145,28 @@ defmodule SymphonyElixir.RuntimeTest do
     tracker:
       kind: "memory"
     worker_runtime: "nonexistent"
+    ---
+    prompt
+    """
+
+    File.write!(Workflow.workflow_file_path(), workflow_content)
+    if Process.whereis(SymphonyElixir.WorkflowStore), do: SymphonyElixir.WorkflowStore.force_reload()
+
+    assert {:error, {:invalid_workflow_config, message}} = Config.settings()
+    assert message =~ "nonexistent"
+  end
+
+  test "worker runtime pool referencing undefined profile fails validation" do
+    workflow_content = """
+    ---
+    tracker:
+      kind: "memory"
+    runtimes:
+      codex_worker:
+        adapter: "direct"
+        provider: "codex"
+        command: "codex app-server"
+    worker_runtimes: ["codex_worker", "nonexistent"]
     ---
     prompt
     """
@@ -228,6 +253,45 @@ defmodule SymphonyElixir.RuntimeTest do
     assert resolved.config.name == "claude_worker"
     assert resolved.config.provider == "claude"
     assert resolved.adapter_module == ACPAdapter
+  end
+
+  test "resolve_pool_for_role returns ordered worker runtime pool" do
+    workflow_content = """
+    ---
+    tracker:
+      kind: "memory"
+    runtimes:
+      codex_a:
+        adapter: "acp"
+        provider: "codex"
+        transport: "stdio"
+        command: "codex-acp-a"
+      codex_b:
+        adapter: "acp"
+        provider: "codex"
+        transport: "stdio"
+        command: "codex-acp-b"
+    worker_runtimes: ["codex_a", "codex_b"]
+    ---
+    prompt
+    """
+
+    File.write!(Workflow.workflow_file_path(), workflow_content)
+    if Process.whereis(SymphonyElixir.WorkflowStore), do: SymphonyElixir.WorkflowStore.force_reload()
+
+    assert {:ok, [first, second]} = Registry.resolve_pool_for_role(:worker)
+    assert first.config.name == "codex_a"
+    assert second.config.name == "codex_b"
+    assert Enum.all?([first, second], &(&1.adapter_module == ACPAdapter))
+  end
+
+  test "worker runtime pool defaults to codex when no runtimes configured" do
+    write_workflow_file!(Workflow.workflow_file_path())
+
+    assert Config.runtime_pool(:worker) == ["codex"]
+    assert {:ok, [resolved]} = Registry.resolve_pool_for_role(:worker)
+    assert resolved.config.name == "codex"
+    assert resolved.adapter_module == DirectCodexAdapter
   end
 
   test "resolve_default returns codex direct profile" do
@@ -696,6 +760,9 @@ defmodule SymphonyElixir.RuntimeTest do
 
   test "presenter runtime_identity produces correct shape" do
     entry = %{
+      runtime_pool: ["claude_worker", "codex_worker"],
+      runtime_index: 1,
+      runtime_rotations: 3,
       runtime_profile: "claude_worker",
       runtime_provider: "claude",
       runtime_adapter: "acp",
@@ -709,7 +776,10 @@ defmodule SymphonyElixir.RuntimeTest do
       provider: Map.get(entry, :runtime_provider, "codex"),
       adapter: Map.get(entry, :runtime_adapter, "direct"),
       transport: Map.get(entry, :runtime_transport, "stdio"),
-      display_name: Map.get(entry, :runtime_display_name)
+      display_name: Map.get(entry, :runtime_display_name),
+      pool: Map.get(entry, :runtime_pool, [Map.get(entry, :runtime_profile, "codex")]),
+      pool_index: Map.get(entry, :runtime_index, 0),
+      rotations: Map.get(entry, :runtime_rotations, 0)
     }
 
     assert identity == %{
@@ -717,7 +787,10 @@ defmodule SymphonyElixir.RuntimeTest do
              provider: "claude",
              adapter: "acp",
              transport: "stdio",
-             display_name: "Claude ACP"
+             display_name: "Claude ACP",
+             pool: ["claude_worker", "codex_worker"],
+             pool_index: 1,
+             rotations: 3
            }
   end
 
@@ -729,9 +802,21 @@ defmodule SymphonyElixir.RuntimeTest do
       provider: Map.get(entry, :runtime_provider, "codex"),
       adapter: Map.get(entry, :runtime_adapter, "direct"),
       transport: Map.get(entry, :runtime_transport, "stdio"),
-      display_name: Map.get(entry, :runtime_display_name)
+      display_name: Map.get(entry, :runtime_display_name),
+      pool: Map.get(entry, :runtime_pool, [Map.get(entry, :runtime_profile, "codex")]),
+      pool_index: Map.get(entry, :runtime_index, 0),
+      rotations: Map.get(entry, :runtime_rotations, 0)
     }
 
-    assert identity == %{profile: "codex", provider: "codex", adapter: "direct", transport: "stdio", display_name: nil}
+    assert identity == %{
+             profile: "codex",
+             provider: "codex",
+             adapter: "direct",
+             transport: "stdio",
+             display_name: nil,
+             pool: ["codex"],
+             pool_index: 0,
+             rotations: 0
+           }
   end
 end

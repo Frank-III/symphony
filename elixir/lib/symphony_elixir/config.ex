@@ -95,16 +95,48 @@ defmodule SymphonyElixir.Config do
               List.first(Schema.resolve_planner_runtimes(settings)) ||
               settings.judge_runtime ||
               settings.worker_runtime ||
+              List.first(Schema.resolve_worker_runtimes(settings)) ||
               default_runtime
 
           :judge ->
-            settings.judge_runtime || settings.worker_runtime || default_runtime
+            settings.judge_runtime ||
+              settings.worker_runtime ||
+              List.first(Schema.resolve_worker_runtimes(settings)) ||
+              default_runtime
 
           :worker ->
-            settings.worker_runtime || default_runtime
+            settings.worker_runtime || List.first(Schema.resolve_worker_runtimes(settings)) || default_runtime
         end
     end
   end
+
+  @spec runtime_pool() :: [agent_runtime()]
+  def runtime_pool, do: runtime_pool(:worker, [])
+
+  @spec runtime_pool(agent_role()) :: [agent_runtime()]
+  def runtime_pool(role), do: runtime_pool(role, [])
+
+  @spec runtime_pool(agent_role(), keyword()) :: [agent_runtime()]
+  def runtime_pool(:worker, opts) do
+    case Keyword.get(opts, :runtime) do
+      runtime when is_binary(runtime) and runtime != "" ->
+        [runtime]
+
+      _ ->
+        settings = settings!()
+        default_runtime = Schema.materialize_codex_default_profile(settings).name
+
+        [settings.worker_runtime | Schema.resolve_worker_runtimes(settings)]
+        |> Enum.filter(&(is_binary(&1) and &1 != ""))
+        |> Enum.uniq()
+        |> case do
+          [] -> [default_runtime]
+          pool -> pool
+        end
+    end
+  end
+
+  def runtime_pool(role, opts), do: [agent_runtime(role, opts)]
 
   @spec brainstorm_planner_runtimes() :: [agent_runtime()]
   def brainstorm_planner_runtimes do
@@ -122,17 +154,20 @@ defmodule SymphonyElixir.Config do
   def runtime_session_requirements do
     case agent_orchestration_mode() do
       "planner_worker_judge" ->
-        [:planner, :worker, :judge]
-        |> Enum.map(&agent_runtime/1)
+        [agent_runtime(:planner)]
+        |> Kernel.++(runtime_pool(:worker))
+        |> Kernel.++([agent_runtime(:judge)])
         |> count_runtimes()
 
       "brainstorm_arbiter_worker_judge" ->
         brainstorm_planner_runtimes()
-        |> Kernel.++([agent_runtime(:arbiter), agent_runtime(:worker), agent_runtime(:judge)])
+        |> Kernel.++([agent_runtime(:arbiter)])
+        |> Kernel.++(runtime_pool(:worker))
+        |> Kernel.++([agent_runtime(:judge)])
         |> count_runtimes()
 
       _other ->
-        [agent_runtime(:worker)]
+        runtime_pool(:worker)
         |> count_runtimes()
     end
   end

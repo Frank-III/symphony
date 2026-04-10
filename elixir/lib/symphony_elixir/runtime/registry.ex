@@ -29,12 +29,43 @@ defmodule SymphonyElixir.Runtime.Registry do
     end
   end
 
+  @spec resolve_pool_for_role(atom()) :: {:ok, [Profile.t()]} | {:error, term()}
+  def resolve_pool_for_role(:worker) do
+    Config.runtime_pool(:worker)
+    |> resolve_pool_by_names()
+  end
+
+  def resolve_pool_for_role(role) when role in [:planner, :judge] do
+    with {:ok, profile} <- resolve_for_role(role) do
+      {:ok, [profile]}
+    end
+  end
+
   @spec resolve_by_name(String.t()) :: {:ok, Profile.t()} | {:error, term()}
   def resolve_by_name(name) when is_binary(name) do
-    with {:ok, settings} <- Config.settings(),
-         {:ok, runtime_profile} <- Schema.runtime_profile(settings, name) do
-      resolve_adapter(runtime_profile)
+    with {:ok, settings} <- Config.settings() do
+      default_profile = Schema.materialize_codex_default_profile(settings)
+
+      cond do
+        map_size(settings.runtimes) == 0 and name == default_profile.name ->
+          resolve_adapter(default_profile)
+
+        true ->
+          with {:ok, runtime_profile} <- Schema.runtime_profile(settings, name) do
+            resolve_adapter(runtime_profile)
+          end
+      end
     end
+  end
+
+  @spec resolve_pool_by_names([String.t()]) :: {:ok, [Profile.t()]} | {:error, term()}
+  def resolve_pool_by_names(names) when is_list(names) do
+    Enum.reduce_while(names, {:ok, []}, fn name, {:ok, acc} ->
+      case resolve_by_name(name) do
+        {:ok, profile} -> {:cont, {:ok, acc ++ [profile]}}
+        {:error, _} = error -> {:halt, error}
+      end
+    end)
   end
 
   @spec resolve_default() :: {:ok, Profile.t()} | {:error, term()}
