@@ -67,7 +67,7 @@ defmodule SymphonyElixir.RuntimeTest do
     assert settings.worker_runtime == "codex_direct"
   end
 
-  test "config with multiple ACP stdio runtimes parses transport fields" do
+  test "config with multiple ACP runtimes parses transport fields" do
     workflow_content = """
     ---
     tracker:
@@ -78,27 +78,26 @@ defmodule SymphonyElixir.RuntimeTest do
         provider: "claude"
         display_name: "Claude ACP"
         transport: "stdio"
-        command: "claude"
-        args: ["--acp"]
-        env:
-          CLAUDE_CODE_ENTRYPOINT: "stdio"
+        command: "claude-agent-acp"
       codex_acp:
         adapter: "acp"
         provider: "codex"
         display_name: "Codex ACP"
         transport: "stdio"
-        command: "codex"
-        args: ["acp"]
+        command: "codex-acp"
       pi_acp:
         adapter: "acp"
         provider: "pi"
-        transport: "stdio"
-        command: "pi"
+        display_name: "Pi ACP HTTP"
+        transport: "http"
+        endpoint: "https://pi-acp.example.com"
       opencode_acp:
         adapter: "acp"
         provider: "opencode"
+        display_name: "OpenCode ACP"
         transport: "stdio"
         command: "opencode"
+        args: ["acp"]
     planner_runtimes: ["claude_acp", "codex_acp"]
     worker_runtime: "opencode_acp"
     judge_runtime: "pi_acp"
@@ -112,9 +111,12 @@ defmodule SymphonyElixir.RuntimeTest do
     assert {:ok, settings} = Config.settings()
     assert map_size(settings.runtimes) == 4
     assert settings.runtimes["claude_acp"].transport == "stdio"
-    assert settings.runtimes["claude_acp"].args == ["--acp"]
-    assert settings.runtimes["claude_acp"].env == %{"CLAUDE_CODE_ENTRYPOINT" => "stdio"}
-    assert settings.runtimes["opencode_acp"].display_name == nil
+    assert settings.runtimes["claude_acp"].command == "claude-agent-acp"
+    assert settings.runtimes["codex_acp"].command == "codex-acp"
+    assert settings.runtimes["pi_acp"].transport == "http"
+    assert settings.runtimes["pi_acp"].endpoint == "https://pi-acp.example.com"
+    assert settings.runtimes["opencode_acp"].display_name == "OpenCode ACP"
+    assert settings.runtimes["opencode_acp"].args == ["acp"]
     assert Config.brainstorm_planner_runtimes() == ["claude_acp", "codex_acp"]
 
     assert {:ok, %Profile{} = worker} = Registry.resolve_for_role(:worker)
@@ -510,7 +512,6 @@ defmodule SymphonyElixir.RuntimeTest do
     script = Path.join(workspace, "fake_acp_agent")
 
     File.write!(script, """
-    #!/usr/bin/env bash
     IFS= read -r _line
     response_1='{"jsonrpc":"2.0","id":1,"result":'
     response_1="${response_1}"'{"protocolVersion":1,"agentCapabilities":{},"authMethods":[]}}'
@@ -532,7 +533,8 @@ defmodule SymphonyElixir.RuntimeTest do
       adapter: "acp",
       provider: "codex",
       transport: "stdio",
-      command: script,
+      command: "/bin/sh",
+      args: [script],
       cwd: workspace,
       read_timeout_ms: 1_000,
       turn_timeout_ms: 1_000
