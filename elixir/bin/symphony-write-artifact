@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+if [ "$#" -ne 1 ]; then
+  echo "usage: $0 <artifact-path>" >&2
+  exit 64
+fi
+
+artifact_path="$1"
+artifact_dir="$(dirname "$artifact_path")"
+
+mkdir -p "$artifact_dir"
+
+tmp_file="$(mktemp "${artifact_path}.tmp.XXXXXX")"
+input_file="$(mktemp "${artifact_path}.input.XXXXXX")"
+cleanup() {
+  rm -f "$tmp_file"
+  rm -f "$input_file"
+}
+trap cleanup EXIT
+
+cat > "$input_file"
+
+python3 - "$input_file" "$tmp_file" <<'PY'
+import json
+import pathlib
+import sys
+
+input_path = pathlib.Path(sys.argv[1])
+tmp_path = pathlib.Path(sys.argv[2])
+
+try:
+    payload = json.loads(input_path.read_text(encoding="utf-8"))
+except json.JSONDecodeError as exc:
+    print(f"artifact payload must be valid JSON: {exc}", file=sys.stderr)
+    sys.exit(1)
+
+if not isinstance(payload, dict):
+    print("artifact payload must be a JSON object", file=sys.stderr)
+    sys.exit(1)
+
+tmp_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
+
+mv "$tmp_file" "$artifact_path"
+trap - EXIT

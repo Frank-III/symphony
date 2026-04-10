@@ -148,13 +148,12 @@ runtimes:
     transport: stdio
     command: opencode
     args: ["acp"]
-  claude_acp_http:
+  pi_acp_http:
     adapter: acp
-    provider: claude
-    display_name: Claude ACP HTTP
+    provider: pi
+    display_name: Pi ACP HTTP
     transport: http
-    endpoint: http://127.0.0.1:8765
-    auth: $CLAUDE_ACP_TOKEN
+    endpoint: http://127.0.0.1:8787
   codex_direct:
     adapter: direct
     provider: codex
@@ -163,8 +162,14 @@ runtimes:
 planner_runtimes: ["claude_acp", "codex_acp"]
 planner_runtime: claude_acp
 worker_runtime: opencode_acp
-judge_runtime: pi_acp
+judge_runtime: codex_acp
 ```
+
+- If you install adapters through npm instead of putting binaries on `PATH`, use `npx`:
+  - Claude: `command: npx` with `args: ["-y", "@agentclientprotocol/claude-agent-acp"]`
+  - Codex: `command: npx` with `args: ["-y", "@zed-industries/codex-acp"]`
+- See [`WORKFLOW.acp-smoke.example.md`](./WORKFLOW.acp-smoke.example.md) for a copy-paste ACP smoke
+  configuration that matches the currently verified adapter layout.
 
 - Safer Codex defaults are used when policy fields are omitted:
   - `codex.approval_policy` defaults to `{"reject":{"sandbox_approval":true,"rules":true,"mcp_elicitations":true}}`
