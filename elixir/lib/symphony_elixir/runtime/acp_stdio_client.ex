@@ -133,7 +133,9 @@ defmodule SymphonyElixir.Runtime.ACPStdioClient do
       }
     })
 
-    case await_response(port, @initialize_id, profile.read_timeout_ms || @default_read_timeout_ms, fn _ -> :ok end, []) do
+    read_timeout_ms = profile.read_timeout_ms || @default_read_timeout_ms
+
+    case await_response(port, @initialize_id, read_timeout_ms, fn _ -> :ok end, []) do
       {:ok, response, _events} -> {:ok, response}
       {:error, reason} -> {:error, {:acp_handshake_error, profile.name, :initialize, reason}}
     end
@@ -145,7 +147,9 @@ defmodule SymphonyElixir.Runtime.ACPStdioClient do
       "mcpServers" => []
     })
 
-    case await_response(port, @session_new_id, profile.read_timeout_ms || @default_read_timeout_ms, fn _ -> :ok end, []) do
+    read_timeout_ms = profile.read_timeout_ms || @default_read_timeout_ms
+
+    case await_response(port, @session_new_id, read_timeout_ms, fn _ -> :ok end, []) do
       {:ok, %{"sessionId" => session_id}, _events} when is_binary(session_id) ->
         {:ok, session_id}
 
@@ -219,7 +223,7 @@ defmodule SymphonyElixir.Runtime.ACPStdioClient do
   defp format_prompt_result(response, []), do: response
 
   defp format_prompt_result(response, chunks) do
-    Map.put(response, "content", Enum.map(chunks, &content_text/1) |> Enum.join(""))
+    Map.put(response, "content", Enum.map_join(chunks, "", &content_text/1))
   end
 
   defp content_text(%{"type" => "text", "text" => text}) when is_binary(text), do: text
@@ -244,7 +248,7 @@ defmodule SymphonyElixir.Runtime.ACPStdioClient do
       "jsonrpc" => "2.0",
       "id" => id,
       "error" => %{
-        "code" => -32601,
+        "code" => -32_601,
         "message" => "ACP client method #{method} is not supported by Symphony"
       }
     })
@@ -255,25 +259,23 @@ defmodule SymphonyElixir.Runtime.ACPStdioClient do
   end
 
   defp start_port(command, args, env, cwd, profile_name) do
-    try do
-      port =
-        Port.open(
-          {:spawn_executable, String.to_charlist(command)},
-          [
-            :binary,
-            :exit_status,
-            :stderr_to_stdout,
-            args: Enum.map(args, &String.to_charlist/1),
-            env: Enum.map(env, fn {key, value} -> {String.to_charlist(key), String.to_charlist(value)} end),
-            cd: String.to_charlist(cwd),
-            line: @port_line_bytes
-          ]
-        )
+    port =
+      Port.open(
+        {:spawn_executable, String.to_charlist(command)},
+        [
+          :binary,
+          :exit_status,
+          :stderr_to_stdout,
+          args: Enum.map(args, &String.to_charlist/1),
+          env: Enum.map(env, fn {key, value} -> {String.to_charlist(key), String.to_charlist(value)} end),
+          cd: String.to_charlist(cwd),
+          line: @port_line_bytes
+        ]
+      )
 
-      {:ok, port}
-    rescue
-      error -> {:error, {:acp_startup_error, profile_name, {:spawn_failed, Exception.message(error)}}}
-    end
+    {:ok, port}
+  rescue
+    error -> {:error, {:acp_startup_error, profile_name, {:spawn_failed, Exception.message(error)}}}
   end
 
   defp resolve_command(%RuntimeProfile{name: name, command: command}, cwd) when is_binary(command) do

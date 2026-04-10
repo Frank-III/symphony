@@ -1262,7 +1262,7 @@ defmodule SymphonyElixir.CoreTest do
         state: "In Progress"
       }
 
-      assert_raise RuntimeError, ~r/workspace_prepare_failed/, fn ->
+      assert_raise AgentRunner.Error, ~r/workspace_prepare_failed/, fn ->
         AgentRunner.run(issue, nil, worker_host: "worker-a")
       end
 

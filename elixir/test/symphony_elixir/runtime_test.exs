@@ -346,8 +346,17 @@ defmodule SymphonyElixir.RuntimeTest do
 
   test "all four priority providers are valid" do
     for provider <- ~w(claude codex pi opencode) do
-      attrs = %{"name" => "test_#{provider}", "adapter" => "acp", "provider" => provider, "endpoint" => "https://example.com"}
-      assert {:ok, profile} = RuntimeProfile.changeset(%RuntimeProfile{}, attrs) |> Ecto.Changeset.apply_action(:validate)
+      attrs = %{
+        "name" => "test_#{provider}",
+        "adapter" => "acp",
+        "provider" => provider,
+        "endpoint" => "https://example.com"
+      }
+
+      assert {:ok, profile} =
+               RuntimeProfile.changeset(%RuntimeProfile{}, attrs)
+               |> Ecto.Changeset.apply_action(:validate)
+
       assert profile.provider == provider
     end
   end
@@ -385,7 +394,13 @@ defmodule SymphonyElixir.RuntimeTest do
   end
 
   test "ACPAdapter.runtime_metadata returns consistent metadata shape" do
-    profile = %RuntimeProfile{name: "claude_acp", adapter: "acp", provider: "claude", transport: "http", display_name: "Claude ACP"}
+    profile = %RuntimeProfile{
+      name: "claude_acp",
+      adapter: "acp",
+      provider: "claude",
+      transport: "http",
+      display_name: "Claude ACP"
+    }
 
     session = %{
       __adapter__: ACPAdapter,
@@ -497,11 +512,16 @@ defmodule SymphonyElixir.RuntimeTest do
     File.write!(script, """
     #!/usr/bin/env bash
     IFS= read -r _line
-    printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":1,\"agentCapabilities\":{},\"authMethods\":[]}}'
+    response_1='{"jsonrpc":"2.0","id":1,"result":'
+    response_1="${response_1}"'{"protocolVersion":1,"agentCapabilities":{},"authMethods":[]}}'
+    printf '%s\\n' "$response_1"
     IFS= read -r _line
     printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"sessionId\":\"sess-stdio\"}}'
     IFS= read -r _line
-    printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"sess-stdio\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"hello from stdio\"}}}}'
+    update='{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"sess-stdio",'
+    update="${update}"'"update":{"sessionUpdate":"agent_message_chunk",'
+    update="${update}"'"content":{"type":"text","text":"hello from stdio"}}}}'
+    printf '%s\\n' "$update"
     printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"stopReason\":\"end_turn\"}}'
     """)
 
