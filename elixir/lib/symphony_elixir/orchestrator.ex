@@ -136,12 +136,16 @@ defmodule SymphonyElixir.Orchestrator do
 
               state
               |> complete_issue(issue_id)
-              |> schedule_issue_retry(issue_id, 1, %{
-                identifier: running_entry.identifier,
-                delay_type: :continuation,
-                worker_host: Map.get(running_entry, :worker_host),
-                workspace_path: Map.get(running_entry, :workspace_path)
-              })
+              |> schedule_issue_retry(
+                issue_id,
+                1,
+                build_retry_metadata(running_entry, %{
+                  identifier: running_entry.identifier,
+                  delay_type: :continuation,
+                  worker_host: Map.get(running_entry, :worker_host),
+                  workspace_path: Map.get(running_entry, :workspace_path)
+                })
+              )
 
             _ ->
               if non_retryable_agent_exit_reason?(reason) do
@@ -153,12 +157,21 @@ defmodule SymphonyElixir.Orchestrator do
 
                 next_attempt = next_retry_attempt_from_running(running_entry)
 
-                schedule_issue_retry(state, issue_id, next_attempt, %{
-                  identifier: running_entry.identifier,
-                  error: "agent exited: #{inspect(reason)}",
-                  worker_host: Map.get(running_entry, :worker_host),
-                  workspace_path: Map.get(running_entry, :workspace_path)
-                })
+                schedule_issue_retry(
+                  state,
+                  issue_id,
+                  next_attempt,
+                  build_rotating_retry_metadata(
+                    running_entry,
+                    reason,
+                    %{
+                      identifier: running_entry.identifier,
+                      error: "agent exited: #{inspect(reason)}",
+                      worker_host: Map.get(running_entry, :worker_host),
+                      workspace_path: Map.get(running_entry, :workspace_path)
+                    }
+                  )
+                )
               end
           end
 
@@ -506,10 +519,18 @@ defmodule SymphonyElixir.Orchestrator do
 
       state
       |> terminate_running_issue(issue_id, false)
-      |> schedule_issue_retry(issue_id, next_attempt, %{
-        identifier: identifier,
-        error: "stalled for #{elapsed_ms}ms without codex activity"
-      })
+      |> schedule_issue_retry(
+        issue_id,
+        next_attempt,
+        build_rotating_retry_metadata(
+          running_entry,
+          {:stall_timeout, elapsed_ms},
+          %{
+            identifier: identifier,
+            error: "stalled for #{elapsed_ms}ms without codex activity"
+          }
+        )
+      )
     else
       state
     end
@@ -686,10 +707,16 @@ defmodule SymphonyElixir.Orchestrator do
     |> MapSet.new()
   end
 
-  defp dispatch_issue(%State{} = state, issue, attempt \\ nil, preferred_worker_host \\ nil) do
+  defp dispatch_issue(
+         %State{} = state,
+         issue,
+         attempt \\ nil,
+         preferred_worker_host \\ nil,
+         retry_metadata \\ %{}
+       ) do
     case revalidate_issue_for_dispatch(issue, &Tracker.fetch_issue_states_by_ids/1, terminal_state_set()) do
       {:ok, %Issue{} = refreshed_issue} ->
-        do_dispatch_issue(state, refreshed_issue, attempt, preferred_worker_host)
+        do_dispatch_issue(state, refreshed_issue, attempt, preferred_worker_host, retry_metadata)
 
       {:skip, :missing} ->
         Logger.info("Skipping dispatch; issue no longer active or visible: #{issue_context(issue)}")
@@ -706,7 +733,7 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp do_dispatch_issue(%State{} = state, issue, attempt, preferred_worker_host) do
+  defp do_dispatch_issue(%State{} = state, issue, attempt, preferred_worker_host, retry_metadata) do
     recipient = self()
 
     case select_worker_host(state, preferred_worker_host) do
@@ -715,12 +742,20 @@ defmodule SymphonyElixir.Orchestrator do
         state
 
       worker_host ->
-        spawn_issue_on_worker_host(state, issue, attempt, recipient, worker_host)
+        spawn_issue_on_worker_host(state, issue, attempt, recipient, worker_host, retry_metadata)
     end
   end
 
-  defp spawn_issue_on_worker_host(%State{} = state, issue, attempt, recipient, worker_host) do
-    resolved_profile = resolve_runtime_profile_for_dispatch()
+  defp spawn_issue_on_worker_host(
+         %State{} = state,
+         issue,
+         attempt,
+         recipient,
+         worker_host,
+         retry_metadata
+       ) do
+    runtime_selection = resolve_runtime_profile_for_dispatch(retry_metadata)
+    resolved_profile = runtime_selection.resolved
 
     runner_opts =
       [attempt: attempt, worker_host: worker_host]
@@ -758,6 +793,9 @@ defmodule SymphonyElixir.Orchestrator do
             turn_count: 0,
             retry_attempt: normalize_retry_attempt(attempt),
             started_at: DateTime.utc_now(),
+            runtime_pool: runtime_selection.pool,
+            runtime_index: runtime_selection.index,
+            runtime_rotations: runtime_selection.rotations,
             runtime_profile: runtime_info.profile_name,
             runtime_provider: runtime_info.provider,
             runtime_adapter: runtime_info.adapter,
@@ -776,11 +814,22 @@ defmodule SymphonyElixir.Orchestrator do
         Logger.error("Unable to spawn agent for #{issue_context(issue)}: #{inspect(reason)}")
         next_attempt = if is_integer(attempt), do: attempt + 1, else: nil
 
-        schedule_issue_retry(state, issue.id, next_attempt, %{
-          identifier: issue.identifier,
-          error: "failed to spawn agent: #{inspect(reason)}",
-          worker_host: worker_host
-        })
+        schedule_issue_retry(
+          state,
+          issue.id,
+          next_attempt,
+          build_rotating_retry_metadata(
+            retry_metadata
+            |> Map.put(:worker_host, worker_host)
+            |> Map.put_new(:identifier, issue.identifier),
+            reason,
+            %{
+              identifier: issue.identifier,
+              error: "failed to spawn agent: #{inspect(reason)}",
+              worker_host: worker_host
+            }
+          )
+        )
     end
   end
 
@@ -824,6 +873,9 @@ defmodule SymphonyElixir.Orchestrator do
     error = pick_retry_error(previous_retry, metadata)
     worker_host = pick_retry_worker_host(previous_retry, metadata)
     workspace_path = pick_retry_workspace_path(previous_retry, metadata)
+    runtime_pool = pick_retry_runtime_pool(previous_retry, metadata)
+    runtime_index = pick_retry_runtime_index(previous_retry, metadata, runtime_pool)
+    runtime_rotations = pick_retry_runtime_rotations(previous_retry, metadata)
 
     if is_reference(old_timer) do
       Process.cancel_timer(old_timer)
@@ -846,7 +898,10 @@ defmodule SymphonyElixir.Orchestrator do
             identifier: identifier,
             error: error,
             worker_host: worker_host,
-            workspace_path: workspace_path
+            workspace_path: workspace_path,
+            runtime_pool: runtime_pool,
+            runtime_index: runtime_index,
+            runtime_rotations: runtime_rotations
           })
     }
   end
@@ -858,7 +913,10 @@ defmodule SymphonyElixir.Orchestrator do
           identifier: Map.get(retry_entry, :identifier),
           error: Map.get(retry_entry, :error),
           worker_host: Map.get(retry_entry, :worker_host),
-          workspace_path: Map.get(retry_entry, :workspace_path)
+          workspace_path: Map.get(retry_entry, :workspace_path),
+          runtime_pool: Map.get(retry_entry, :runtime_pool),
+          runtime_index: Map.get(retry_entry, :runtime_index),
+          runtime_rotations: Map.get(retry_entry, :runtime_rotations, 0)
         }
 
         {:ok, attempt, metadata, %{state | retry_attempts: Map.delete(state.retry_attempts, issue_id)}}
@@ -946,7 +1004,7 @@ defmodule SymphonyElixir.Orchestrator do
     if retry_candidate_issue?(issue, terminal_state_set()) and
          dispatch_slots_available?(issue, state) and
          worker_slots_available?(state, metadata[:worker_host]) do
-      {:noreply, dispatch_issue(state, issue, attempt, metadata[:worker_host])}
+      {:noreply, dispatch_issue(state, issue, attempt, metadata[:worker_host], metadata)}
     else
       Logger.debug("No available slots for retrying #{issue_context(issue)}; retrying again")
 
@@ -983,11 +1041,18 @@ defmodule SymphonyElixir.Orchestrator do
   defp normalize_retry_attempt(attempt) when is_integer(attempt) and attempt > 0, do: attempt
   defp normalize_retry_attempt(_attempt), do: 0
 
-  defp resolve_runtime_profile_for_dispatch do
-    case SymphonyElixir.Runtime.Registry.resolve_for_role(:worker) do
-      {:ok, resolved} -> {:ok, resolved}
-      {:error, _} -> :fallback
-    end
+  defp resolve_runtime_profile_for_dispatch(metadata) do
+    pool = resolve_worker_runtime_pool(metadata)
+    index = normalize_runtime_pool_index(Map.get(metadata, :runtime_index), pool)
+    rotations = normalize_runtime_rotation_count(Map.get(metadata, :runtime_rotations))
+    runtime_name = Enum.at(pool, index) || List.first(pool) || Config.agent_runtime(:worker)
+
+    %{
+      pool: pool,
+      index: index,
+      rotations: rotations,
+      resolved: resolve_runtime_profile_for_name(runtime_name)
+    }
   end
 
   defp runtime_info_from_resolved({:ok, resolved}) do
@@ -1021,6 +1086,30 @@ defmodule SymphonyElixir.Orchestrator do
   defp non_retryable_agent_runner_error?({:invalid_workflow_config, _message}), do: true
   defp non_retryable_agent_runner_error?(_reason), do: false
 
+  defp retryable_worker_runtime_error?(reason) do
+    reason
+    |> agent_runner_error_reason()
+    |> retryable_agent_runner_error?()
+  end
+
+  defp retryable_agent_runner_error?({:port_exit, _status}), do: true
+  defp retryable_agent_runner_error?({:response_timeout, _request_name, _timeout_ms}), do: true
+  defp retryable_agent_runner_error?({:response_timeout, _request_name, _timeout_ms, _metadata}), do: true
+  defp retryable_agent_runner_error?(:turn_timeout), do: true
+  defp retryable_agent_runner_error?({:turn_failed, detail}), do: rate_limited_error?(detail)
+  defp retryable_agent_runner_error?({:transport_error, _reason}), do: true
+  defp retryable_agent_runner_error?({:http_error, status, _body}) when status in [408, 409, 423, 425, 429, 500, 502, 503, 504], do: true
+  defp retryable_agent_runner_error?({:acp_stdio_exit, _status}), do: true
+  defp retryable_agent_runner_error?({:acp_stdio_timeout, _timeout_ms}), do: true
+  defp retryable_agent_runner_error?({:acp_jsonrpc_error, _id, _error}), do: true
+  defp retryable_agent_runner_error?({:acp_malformed_json, _line, _message}), do: true
+  defp retryable_agent_runner_error?({:acp_startup_error, _profile_name, _detail}), do: true
+  defp retryable_agent_runner_error?({:acp_handshake_error, _profile_name, _step, _detail}), do: true
+  defp retryable_agent_runner_error?({:unexpected_session_response, _response}), do: true
+  defp retryable_agent_runner_error?({:unexpected_turn_response, _response}), do: true
+  defp retryable_agent_runner_error?({:stall_timeout, _elapsed_ms}), do: true
+  defp retryable_agent_runner_error?(_reason), do: false
+
   defp resolved_runtime_transport(%{transport: transport}) when is_binary(transport) and transport != "",
     do: transport
 
@@ -1037,6 +1126,131 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp maybe_add_runtime_profile(opts, {:ok, profile}), do: Keyword.put(opts, :runtime_profile, profile)
   defp maybe_add_runtime_profile(opts, :fallback), do: opts
+
+  defp resolve_runtime_profile_for_name(runtime_name) when is_binary(runtime_name) do
+    case SymphonyElixir.Runtime.Registry.resolve_by_name(runtime_name) do
+      {:ok, resolved} -> {:ok, resolved}
+      {:error, _} -> :fallback
+    end
+  end
+
+  defp resolve_runtime_profile_for_name(_runtime_name), do: :fallback
+
+  defp resolve_worker_runtime_pool(metadata) when is_map(metadata) do
+    metadata
+    |> Map.get(:runtime_pool)
+    |> normalize_runtime_pool()
+  end
+
+  defp resolve_worker_runtime_pool(_metadata), do: Config.runtime_pool(:worker)
+
+  defp normalize_runtime_pool(pool) when is_list(pool) do
+    pool
+    |> Enum.filter(&(is_binary(&1) and &1 != ""))
+    |> Enum.uniq()
+    |> case do
+      [] -> Config.runtime_pool(:worker)
+      normalized -> normalized
+    end
+  end
+
+  defp normalize_runtime_pool(_pool), do: Config.runtime_pool(:worker)
+
+  defp normalize_runtime_pool_index(index, pool)
+       when is_integer(index) and index >= 0 and is_list(pool) and index < length(pool),
+       do: index
+
+  defp normalize_runtime_pool_index(_index, _pool), do: 0
+
+  defp normalize_runtime_rotation_count(rotations) when is_integer(rotations) and rotations >= 0,
+    do: rotations
+
+  defp normalize_runtime_rotation_count(_rotations), do: 0
+
+  defp build_retry_metadata(source, metadata) when is_map(metadata) do
+    metadata
+    |> Map.merge(runtime_retry_metadata(source))
+  end
+
+  defp build_rotating_retry_metadata(source, reason, metadata) when is_map(metadata) do
+    source
+    |> build_retry_metadata(metadata)
+    |> maybe_rotate_worker_runtime_pool(reason)
+  end
+
+  defp runtime_retry_metadata(source) when is_map(source) do
+    pool = normalize_runtime_pool(Map.get(source, :runtime_pool))
+    index = normalize_runtime_pool_index(Map.get(source, :runtime_index), pool)
+
+    %{
+      runtime_pool: pool,
+      runtime_index: index,
+      runtime_rotations: normalize_runtime_rotation_count(Map.get(source, :runtime_rotations))
+    }
+  end
+
+  defp runtime_retry_metadata(_source) do
+    %{
+      runtime_pool: Config.runtime_pool(:worker),
+      runtime_index: 0,
+      runtime_rotations: 0
+    }
+  end
+
+  defp maybe_rotate_worker_runtime_pool(metadata, reason) when is_map(metadata) do
+    pool = normalize_runtime_pool(Map.get(metadata, :runtime_pool))
+    index = normalize_runtime_pool_index(Map.get(metadata, :runtime_index), pool)
+    rotations = normalize_runtime_rotation_count(Map.get(metadata, :runtime_rotations))
+
+    if retryable_worker_runtime_error?(reason) and length(pool) > 1 do
+      Map.merge(metadata, %{
+        runtime_pool: pool,
+        runtime_index: rem(index + 1, length(pool)),
+        runtime_rotations: rotations + 1
+      })
+    else
+      Map.merge(metadata, %{runtime_pool: pool, runtime_index: index, runtime_rotations: rotations})
+    end
+  end
+
+  defp rate_limited_error?(detail) do
+    detail
+    |> inspect()
+    |> String.downcase()
+    |> then(fn text ->
+      String.contains?(text, "rate limit") or
+        String.contains?(text, "rate_limit") or
+        String.contains?(text, "quota") or
+        String.contains?(text, "too many requests")
+    end)
+  end
+
+  defp pick_retry_runtime_pool(previous_retry, metadata) do
+    metadata[:runtime_pool]
+    |> case do
+      pool when is_list(pool) -> pool
+      _ -> Map.get(previous_retry, :runtime_pool)
+    end
+    |> normalize_runtime_pool()
+  end
+
+  defp pick_retry_runtime_index(previous_retry, metadata, runtime_pool) do
+    metadata[:runtime_index]
+    |> case do
+      index when is_integer(index) -> index
+      _ -> Map.get(previous_retry, :runtime_index, 0)
+    end
+    |> normalize_runtime_pool_index(runtime_pool)
+  end
+
+  defp pick_retry_runtime_rotations(previous_retry, metadata) do
+    metadata[:runtime_rotations]
+    |> case do
+      rotations when is_integer(rotations) -> rotations
+      _ -> Map.get(previous_retry, :runtime_rotations, 0)
+    end
+    |> normalize_runtime_rotation_count()
+  end
 
   defp next_retry_attempt_from_running(running_entry) do
     case Map.get(running_entry, :retry_attempt) do
@@ -1252,6 +1466,9 @@ defmodule SymphonyElixir.Orchestrator do
           last_codex_message: metadata.last_codex_message,
           last_codex_event: metadata.last_codex_event,
           runtime_seconds: running_seconds(metadata.started_at, now),
+          runtime_pool: Map.get(metadata, :runtime_pool, [Map.get(metadata, :runtime_profile, "codex")]),
+          runtime_index: Map.get(metadata, :runtime_index, 0),
+          runtime_rotations: Map.get(metadata, :runtime_rotations, 0),
           runtime_profile: Map.get(metadata, :runtime_profile, "codex"),
           runtime_provider: Map.get(metadata, :runtime_provider, "codex"),
           runtime_adapter: Map.get(metadata, :runtime_adapter, "direct"),
@@ -1270,7 +1487,10 @@ defmodule SymphonyElixir.Orchestrator do
           identifier: Map.get(retry, :identifier),
           error: Map.get(retry, :error),
           worker_host: Map.get(retry, :worker_host),
-          workspace_path: Map.get(retry, :workspace_path)
+          workspace_path: Map.get(retry, :workspace_path),
+          runtime_pool: Map.get(retry, :runtime_pool, Config.runtime_pool(:worker)),
+          runtime_index: Map.get(retry, :runtime_index, 0),
+          runtime_rotations: Map.get(retry, :runtime_rotations, 0)
         }
       end)
 

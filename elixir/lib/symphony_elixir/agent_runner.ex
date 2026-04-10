@@ -88,7 +88,7 @@ defmodule SymphonyElixir.AgentRunner do
 
     case Workspace.create_for_issue(issue, worker_host) do
       {:ok, workspace} ->
-        send_worker_runtime_info(update_recipient, issue, worker_host, workspace)
+        send_worker_runtime_info(update_recipient, issue, worker_host, workspace, opts)
 
         try do
           with :ok <- Workspace.run_before_run_hook(workspace, issue, worker_host) do
@@ -1688,9 +1688,9 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp send_agent_update(_recipient, _issue, _message), do: :ok
 
-  defp send_worker_runtime_info(recipient, %Issue{id: issue_id}, worker_host, workspace)
+  defp send_worker_runtime_info(recipient, %Issue{id: issue_id}, worker_host, workspace, opts)
        when is_binary(issue_id) and is_pid(recipient) and is_binary(workspace) do
-    runtime_profile = resolve_worker_runtime_profile()
+    runtime_profile = resolve_worker_runtime_profile(opts)
 
     send(
       recipient,
@@ -1712,7 +1712,7 @@ defmodule SymphonyElixir.AgentRunner do
     :ok
   end
 
-  defp send_worker_runtime_info(_recipient, _issue, _worker_host, _workspace), do: :ok
+  defp send_worker_runtime_info(_recipient, _issue, _worker_host, _workspace, _opts), do: :ok
 
   defp continue_with_issue?(%Issue{id: issue_id} = issue, issue_state_fetcher)
        when is_binary(issue_id) do
@@ -1804,10 +1804,16 @@ defmodule SymphonyElixir.AgentRunner do
     end
   end
 
-  defp resolve_worker_runtime_profile do
-    case RuntimeRegistry.resolve_for_role(:worker) do
-      {:ok, profile} -> {:ok, profile}
-      {:error, _reason} -> :fallback
+  defp resolve_worker_runtime_profile(opts) do
+    case Keyword.get(opts, :runtime_profile) do
+      %RuntimeProfile{} = profile ->
+        {:ok, profile}
+
+      _other ->
+        case RuntimeRegistry.resolve_for_role(:worker) do
+          {:ok, profile} -> {:ok, profile}
+          {:error, _reason} -> :fallback
+        end
     end
   end
 

@@ -241,6 +241,12 @@ defmodule SymphonyElixirWeb.DashboardLive do
                       <div class="issue-stack">
                         <span class="issue-id"><%= entry.issue_identifier %></span>
                         <a class="issue-link" href={"/api/v1/#{entry.issue_identifier}"}>JSON details</a>
+                        <span class="muted">
+                          <%= entry.runtime.profile %>
+                          <%= if length(entry.runtime.pool) > 1 do %>
+                            · <span class="mono"><%= entry.runtime.pool_index + 1 %>/<%= length(entry.runtime.pool) %></span>
+                          <% end %>
+                        </span>
                       </div>
                     </td>
                     <td><%= entry.attempt %></td>

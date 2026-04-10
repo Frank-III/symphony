@@ -366,6 +366,7 @@ defmodule SymphonyElixir.Config.Schema do
     field(:planner_runtime, :string)
     field(:planner_runtimes, {:array, :string}, default: [])
     field(:worker_runtime, :string)
+    field(:worker_runtimes, {:array, :string}, default: [])
     field(:judge_runtime, :string)
   end
 
@@ -451,7 +452,7 @@ defmodule SymphonyElixir.Config.Schema do
     %__MODULE__{}
     |> cast(
       attrs,
-      [:runtimes, :planner_runtime, :planner_runtimes, :worker_runtime, :judge_runtime],
+      [:runtimes, :planner_runtime, :planner_runtimes, :worker_runtime, :worker_runtimes, :judge_runtime],
       empty_values: []
     )
     |> cast_embed(:tracker, with: &Tracker.changeset/2)
@@ -465,6 +466,7 @@ defmodule SymphonyElixir.Config.Schema do
     |> cast_embed(:server, with: &Server.changeset/2)
     |> validate_runtime_profiles()
     |> update_change(:planner_runtimes, &normalize_runtime_names/1)
+    |> update_change(:worker_runtimes, &normalize_runtime_names/1)
     |> validate_runtime_role_references()
   end
 
@@ -685,7 +687,7 @@ defmodule SymphonyElixir.Config.Schema do
     case role do
       :planner -> settings.planner_runtime
       :arbiter -> settings.planner_runtime || List.first(settings.planner_runtimes)
-      :worker -> settings.worker_runtime
+      :worker -> settings.worker_runtime || List.first(settings.worker_runtimes)
       :judge -> settings.judge_runtime
     end
   end
@@ -693,6 +695,11 @@ defmodule SymphonyElixir.Config.Schema do
   @spec resolve_planner_runtimes(t()) :: [String.t()]
   def resolve_planner_runtimes(settings) do
     normalize_runtime_names(settings.planner_runtimes)
+  end
+
+  @spec resolve_worker_runtimes(t()) :: [String.t()]
+  def resolve_worker_runtimes(settings) do
+    normalize_runtime_names(settings.worker_runtimes)
   end
 
   @spec runtime_profile(t(), String.t()) :: {:ok, RuntimeProfile.t()} | {:error, :not_found}
@@ -744,6 +751,7 @@ defmodule SymphonyElixir.Config.Schema do
     |> validate_role_ref(:planner_runtime, runtimes)
     |> validate_runtime_name_list(:planner_runtimes, runtimes)
     |> validate_role_ref(:worker_runtime, runtimes)
+    |> validate_runtime_name_list(:worker_runtimes, runtimes)
     |> validate_role_ref(:judge_runtime, runtimes)
   end
 

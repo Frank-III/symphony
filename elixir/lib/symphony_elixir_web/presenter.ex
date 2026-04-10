@@ -125,7 +125,8 @@ defmodule SymphonyElixirWeb.Presenter do
       due_at: due_at_iso8601(entry.due_in_ms),
       error: entry.error,
       worker_host: Map.get(entry, :worker_host),
-      workspace_path: Map.get(entry, :workspace_path)
+      workspace_path: Map.get(entry, :workspace_path),
+      runtime: runtime_identity(entry)
     }
   end
 
@@ -155,7 +156,8 @@ defmodule SymphonyElixirWeb.Presenter do
       due_at: due_at_iso8601(retry.due_in_ms),
       error: retry.error,
       worker_host: Map.get(retry, :worker_host),
-      workspace_path: Map.get(retry, :workspace_path)
+      workspace_path: Map.get(retry, :workspace_path),
+      runtime: runtime_identity(retry)
     }
   end
 
@@ -181,12 +183,17 @@ defmodule SymphonyElixirWeb.Presenter do
   end
 
   defp runtime_identity(entry) do
+    pool = Map.get(entry, :runtime_pool)
+
     %{
       profile: Map.get(entry, :runtime_profile, "codex"),
       provider: Map.get(entry, :runtime_provider, "codex"),
       adapter: Map.get(entry, :runtime_adapter, "direct"),
       transport: Map.get(entry, :runtime_transport, "stdio"),
-      display_name: Map.get(entry, :runtime_display_name)
+      display_name: Map.get(entry, :runtime_display_name),
+      pool: if(is_list(pool), do: pool, else: [Map.get(entry, :runtime_profile, "codex")]),
+      pool_index: Map.get(entry, :runtime_index, 0),
+      rotations: Map.get(entry, :runtime_rotations, 0)
     }
   end
 

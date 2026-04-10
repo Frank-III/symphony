@@ -18,7 +18,7 @@ defmodule SymphonyElixir.StatusDashboard do
   @running_id_width 8
   @running_stage_width 14
   @running_pid_width 8
-  @running_runtime_width 10
+  @running_runtime_width 18
   @running_age_width 12
   @running_tokens_width 10
   @running_session_width 14
@@ -666,6 +666,7 @@ defmodule SymphonyElixir.StatusDashboard do
     identifier = retry_entry.identifier || issue_id
     attempt = retry_entry.attempt || 0
     due_in_ms = retry_entry.due_in_ms || 0
+    runtime = format_retry_runtime(retry_entry)
     error = format_retry_error(retry_entry.error)
 
     "│  #{colorize("↻", @ansi_orange)} " <>
@@ -674,6 +675,7 @@ defmodule SymphonyElixir.StatusDashboard do
       colorize("attempt=#{attempt}", @ansi_yellow) <>
       colorize(" in ", @ansi_dim) <>
       colorize(next_in_words(due_in_ms), @ansi_cyan) <>
+      runtime <>
       error
   end
 
@@ -840,10 +842,29 @@ defmodule SymphonyElixir.StatusDashboard do
   defp compact_runtime_label(entry) do
     profile = Map.get(entry, :runtime_profile, "codex")
     adapter = Map.get(entry, :runtime_adapter, "direct")
+    pool = Map.get(entry, :runtime_pool, [profile])
+    index = Map.get(entry, :runtime_index, 0)
 
-    case adapter do
-      "direct" -> profile
-      _ -> "#{profile}/#{adapter}"
+    base_label =
+      case adapter do
+        "direct" -> profile
+        _ -> "#{profile}/#{adapter}"
+      end
+
+    if is_list(pool) and length(pool) > 1 do
+      "#{base_label} [#{index + 1}/#{length(pool)}]"
+    else
+      base_label
+    end
+  end
+
+  defp format_retry_runtime(retry_entry) do
+    label = compact_runtime_label(retry_entry)
+
+    if is_binary(label) and label != "" do
+      " " <> colorize("runtime=#{label}", @ansi_green)
+    else
+      ""
     end
   end
 

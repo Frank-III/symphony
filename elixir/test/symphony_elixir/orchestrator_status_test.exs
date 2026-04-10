@@ -199,6 +199,80 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert is_integer(completed_state.codex_totals.seconds_running)
   end
 
+  test "orchestrator snapshot includes worker runtime pool metadata" do
+    issue_id = "issue-runtime-pool-snapshot"
+
+    issue = %Issue{
+      id: issue_id,
+      identifier: "MT-203",
+      title: "Runtime pool snapshot test",
+      description: "Keep runtime pool state visible",
+      state: "In Progress",
+      url: "https://example.org/issues/MT-203"
+    }
+
+    orchestrator_name = Module.concat(__MODULE__, :RuntimePoolSnapshotOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    initial_state = :sys.get_state(pid)
+    started_at = DateTime.utc_now()
+
+    running_entry = %{
+      pid: self(),
+      ref: make_ref(),
+      identifier: issue.identifier,
+      issue: issue,
+      session_id: nil,
+      turn_count: 0,
+      codex_app_server_pid: nil,
+      codex_input_tokens: 0,
+      codex_output_tokens: 0,
+      codex_total_tokens: 0,
+      last_codex_message: nil,
+      last_codex_timestamp: nil,
+      last_codex_event: nil,
+      runtime_pool: ["codex_a", "codex_b"],
+      runtime_index: 1,
+      runtime_rotations: 2,
+      runtime_profile: "codex_b",
+      started_at: started_at
+    }
+
+    retry_entry = %{
+      attempt: 3,
+      timer_ref: nil,
+      retry_token: make_ref(),
+      due_at_ms: System.monotonic_time(:millisecond) + 15_000,
+      identifier: issue.identifier,
+      error: "rate limited",
+      runtime_pool: ["codex_a", "codex_b"],
+      runtime_index: 1,
+      runtime_rotations: 2
+    }
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, %{issue_id => running_entry})
+      |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+      |> Map.put(:retry_attempts, %{issue_id => retry_entry})
+    end)
+
+    snapshot = GenServer.call(pid, :snapshot)
+    assert %{running: [running_snapshot], retrying: [retry_snapshot]} = snapshot
+    assert running_snapshot.runtime_pool == ["codex_a", "codex_b"]
+    assert running_snapshot.runtime_index == 1
+    assert running_snapshot.runtime_rotations == 2
+    assert retry_snapshot.runtime_pool == ["codex_a", "codex_b"]
+    assert retry_snapshot.runtime_index == 1
+    assert retry_snapshot.runtime_rotations == 2
+  end
+
   test "orchestrator snapshot tracks turn completed usage when present" do
     issue_id = "issue-turn-completed-usage"
 
@@ -1355,6 +1429,30 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     assert String.length(plain) == terminal_columns
     assert plain =~ "turn completed (completed)"
+  end
+
+  test "status dashboard shows worker runtime pool position in running rows" do
+    row =
+      StatusDashboard.format_running_summary_for_test(
+        %{
+          identifier: "MT-604",
+          state: "running",
+          session_id: "thread-1234567890",
+          codex_app_server_pid: "4242",
+          codex_total_tokens: 321,
+          runtime_seconds: 42,
+          runtime_profile: "codex_b",
+          runtime_adapter: "acp",
+          runtime_pool: ["codex_a", "codex_b"],
+          runtime_index: 1,
+          last_codex_event: :notification,
+          last_codex_message: "runtime rotated"
+        },
+        160
+      )
+
+    plain = Regex.replace(~r/\e\[[0-9;]*m/, row, "")
+    assert plain =~ "codex_b/acp [2/2]"
   end
 
   test "status dashboard humanizes full codex app-server event set" do

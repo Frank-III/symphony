@@ -673,6 +673,95 @@ defmodule SymphonyElixir.CoreTest do
     assert_due_in_range(due_at_ms, 9_000, 10_500)
   end
 
+  test "retryable runtime failures rotate to the next worker runtime in pool" do
+    issue_id = "issue-runtime-rotation"
+    ref = make_ref()
+    orchestrator_name = Module.concat(__MODULE__, :RuntimeRotationOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    initial_state = :sys.get_state(pid)
+
+    running_entry = %{
+      pid: self(),
+      ref: ref,
+      identifier: "MT-563",
+      retry_attempt: 1,
+      runtime_pool: ["codex_a", "codex_b"],
+      runtime_index: 0,
+      runtime_rotations: 0,
+      runtime_profile: "codex_a",
+      issue: %Issue{id: issue_id, identifier: "MT-563", state: "In Progress"},
+      started_at: DateTime.utc_now()
+    }
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, %{issue_id => running_entry})
+      |> Map.put(:claimed, MapSet.new([issue_id]))
+      |> Map.put(:retry_attempts, %{})
+    end)
+
+    reason = {{%AgentRunner.Error{reason: {:http_error, 429, %{"error" => "rate limit"}}}, []}, []}
+    send(pid, {:DOWN, ref, :process, self(), reason})
+    Process.sleep(50)
+    state = :sys.get_state(pid)
+
+    assert %{
+             attempt: 2,
+             runtime_pool: ["codex_a", "codex_b"],
+             runtime_index: 1,
+             runtime_rotations: 1
+           } = state.retry_attempts[issue_id]
+  end
+
+  test "non-runtime failures keep the current worker runtime selection" do
+    issue_id = "issue-runtime-sticky"
+    ref = make_ref()
+    orchestrator_name = Module.concat(__MODULE__, :RuntimeStickyOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    initial_state = :sys.get_state(pid)
+
+    running_entry = %{
+      pid: self(),
+      ref: ref,
+      identifier: "MT-564",
+      retry_attempt: 1,
+      runtime_pool: ["codex_a", "codex_b"],
+      runtime_index: 0,
+      runtime_rotations: 0,
+      runtime_profile: "codex_a",
+      issue: %Issue{id: issue_id, identifier: "MT-564", state: "In Progress"},
+      started_at: DateTime.utc_now()
+    }
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, %{issue_id => running_entry})
+      |> Map.put(:claimed, MapSet.new([issue_id]))
+      |> Map.put(:retry_attempts, %{})
+    end)
+
+    reason = {{%AgentRunner.Error{reason: {:turn_failed, %{"message" => "bad prompt"}}}, []}, []}
+    send(pid, {:DOWN, ref, :process, self(), reason})
+    Process.sleep(50)
+    state = :sys.get_state(pid)
+
+    assert %{runtime_index: 0, runtime_rotations: 0} = state.retry_attempts[issue_id]
+  end
+
   test "stale retry timer messages do not consume newer retry entries" do
     issue_id = "issue-stale-retry"
     orchestrator_name = Module.concat(__MODULE__, :StaleRetryOrchestrator)
