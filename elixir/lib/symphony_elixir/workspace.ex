@@ -31,6 +31,57 @@ defmodule SymphonyElixir.Workspace do
     end
   end
 
+  @spec create_brainstorm_planner_workspace(Path.t(), pos_integer(), worker_host()) ::
+          {:ok, Path.t()} | {:error, term()}
+  def create_brainstorm_planner_workspace(base_workspace, planner_index, worker_host \\ nil)
+      when is_binary(base_workspace) and is_integer(planner_index) and planner_index > 0 do
+    with {:ok, planner_workspace} <-
+           brainstorm_planner_workspace_path(base_workspace, planner_index, worker_host),
+         :ok <- validate_workspace_path(planner_workspace, worker_host),
+         :ok <- clone_workspace(base_workspace, planner_workspace, worker_host) do
+      {:ok, planner_workspace}
+    end
+  end
+
+  @spec refresh_brainstorm_planner_workspace(Path.t(), Path.t(), worker_host()) ::
+          :ok | {:error, term()}
+  def refresh_brainstorm_planner_workspace(base_workspace, planner_workspace, worker_host \\ nil)
+      when is_binary(base_workspace) and is_binary(planner_workspace) do
+    clone_workspace(base_workspace, planner_workspace, worker_host)
+  end
+
+  @spec copy_file(Path.t(), Path.t(), worker_host()) :: :ok | {:error, term()}
+  def copy_file(source_path, destination_path, nil)
+      when is_binary(source_path) and is_binary(destination_path) do
+    try do
+      File.mkdir_p!(Path.dirname(destination_path))
+      File.cp!(source_path, destination_path)
+      :ok
+    rescue
+      error in [File.Error] ->
+        {:error, error}
+    end
+  end
+
+  def copy_file(source_path, destination_path, worker_host)
+      when is_binary(source_path) and is_binary(destination_path) and is_binary(worker_host) do
+    script =
+      [
+        "set -eu",
+        remote_shell_assign("source_path", source_path),
+        remote_shell_assign("destination_path", destination_path),
+        "mkdir -p \"$(dirname \"$destination_path\")\"",
+        "cp \"$source_path\" \"$destination_path\""
+      ]
+      |> Enum.join("\n")
+
+    case run_remote_command(worker_host, script, Config.settings!().hooks.timeout_ms) do
+      {:ok, {_output, 0}} -> :ok
+      {:ok, {output, status}} -> {:error, {:workspace_copy_failed, worker_host, status, output}}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
   defp ensure_workspace(workspace, nil) do
     cond do
       File.dir?(workspace) ->
@@ -87,6 +138,9 @@ defmodule SymphonyElixir.Workspace do
   @spec remove(Path.t()) :: {:ok, [String.t()]} | {:error, term(), String.t()}
   def remove(workspace), do: remove(workspace, nil)
 
+  @spec remove_ephemeral(Path.t()) :: {:ok, [String.t()]} | {:error, term(), String.t()}
+  def remove_ephemeral(workspace), do: remove_ephemeral(workspace, nil)
+
   @spec remove(Path.t(), worker_host()) :: {:ok, [String.t()]} | {:error, term(), String.t()}
   def remove(workspace, nil) do
     case File.exists?(workspace) do
@@ -108,6 +162,40 @@ defmodule SymphonyElixir.Workspace do
   def remove(workspace, worker_host) when is_binary(worker_host) do
     maybe_run_before_remove_hook(workspace, worker_host)
 
+    script =
+      [
+        remote_shell_assign("workspace", workspace),
+        "rm -rf \"$workspace\""
+      ]
+      |> Enum.join("\n")
+
+    case run_remote_command(worker_host, script, Config.settings!().hooks.timeout_ms) do
+      {:ok, {_output, 0}} ->
+        {:ok, []}
+
+      {:ok, {output, status}} ->
+        {:error, {:workspace_remove_failed, worker_host, status, output}, ""}
+
+      {:error, reason} ->
+        {:error, reason, ""}
+    end
+  end
+
+  @spec remove_ephemeral(Path.t(), worker_host()) :: {:ok, [String.t()]} | {:error, term(), String.t()}
+  def remove_ephemeral(workspace, nil) do
+    case File.exists?(workspace) do
+      true ->
+        case validate_workspace_path(workspace, nil) do
+          :ok -> remove_ephemeral_local_workspace(workspace)
+          {:error, reason} -> {:error, reason, ""}
+        end
+
+      false ->
+        File.rm_rf(workspace)
+    end
+  end
+
+  def remove_ephemeral(workspace, worker_host) when is_binary(worker_host) do
     script =
       [
         remote_shell_assign("workspace", workspace),
@@ -201,6 +289,19 @@ defmodule SymphonyElixir.Workspace do
 
   defp workspace_path_for_issue(safe_id, worker_host) when is_binary(safe_id) and is_binary(worker_host) do
     {:ok, Path.join(Config.settings!().workspace.root, safe_id)}
+  end
+
+  defp brainstorm_planner_workspace_path(base_workspace, planner_index, nil)
+       when is_binary(base_workspace) and is_integer(planner_index) and planner_index > 0 do
+    root = Path.expand(Config.settings!().workspace.root)
+    planner_workspace = Path.join(root, "#{Path.basename(base_workspace)}__planner_#{planner_index}")
+    PathSafety.canonicalize(planner_workspace)
+  end
+
+  defp brainstorm_planner_workspace_path(base_workspace, planner_index, worker_host)
+       when is_binary(base_workspace) and is_integer(planner_index) and planner_index > 0 and
+              is_binary(worker_host) do
+    {:ok, Path.join(Config.settings!().workspace.root, "#{Path.basename(base_workspace)}__planner_#{planner_index}")}
   end
 
   defp safe_identifier(identifier) do
@@ -449,8 +550,111 @@ defmodule SymphonyElixir.Workspace do
     end
   end
 
+  defp clone_workspace(base_workspace, planner_workspace, worker_host)
+       when is_binary(base_workspace) and is_binary(planner_workspace) do
+    cond do
+      base_workspace == planner_workspace ->
+        {:error, {:workspace_clone_target_matches_source, base_workspace}}
+
+      worker_host == nil ->
+        clone_workspace_locally(base_workspace, planner_workspace)
+
+      true ->
+        clone_workspace_remotely(base_workspace, planner_workspace, worker_host)
+    end
+  end
+
+  defp clone_workspace_locally(base_workspace, planner_workspace) do
+    case git_workspace?(base_workspace) do
+      true ->
+        clone_workspace_with_git_worktree(base_workspace, planner_workspace)
+
+      false ->
+        script =
+          [
+            "set -eu",
+            "base_workspace=#{shell_escape(base_workspace)}",
+            "planner_workspace=#{shell_escape(planner_workspace)}",
+            "rm -rf \"$planner_workspace\"",
+            "mkdir -p \"$planner_workspace\"",
+            "(cd \"$base_workspace\" && tar cf - .) | (cd \"$planner_workspace\" && tar xpf -)"
+          ]
+          |> Enum.join("\n")
+
+        case System.cmd("sh", ["-lc", script], stderr_to_stdout: true) do
+          {_output, 0} -> :ok
+          {output, status} -> {:error, {:workspace_clone_failed, :local, status, output}}
+        end
+    end
+  end
+
+  defp clone_workspace_remotely(base_workspace, planner_workspace, worker_host) do
+    script =
+      [
+        "set -eu",
+        remote_shell_assign("base_workspace", base_workspace),
+        remote_shell_assign("planner_workspace", planner_workspace),
+        "rm -rf \"$planner_workspace\"",
+        "mkdir -p \"$planner_workspace\"",
+        "(cd \"$base_workspace\" && tar cf - .) | (cd \"$planner_workspace\" && tar xpf -)"
+      ]
+      |> Enum.join("\n")
+
+    case run_remote_command(worker_host, script, Config.settings!().hooks.timeout_ms) do
+      {:ok, {_output, 0}} -> :ok
+      {:ok, {output, status}} -> {:error, {:workspace_clone_failed, worker_host, status, output}}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
   defp shell_escape(value) when is_binary(value) do
     "'" <> String.replace(value, "'", "'\"'\"'") <> "'"
+  end
+
+  defp git_workspace?(workspace) when is_binary(workspace) do
+    case System.cmd("git", ["-C", workspace, "rev-parse", "--is-inside-work-tree"], stderr_to_stdout: true) do
+      {"true\n", 0} -> true
+      _ -> false
+    end
+  end
+
+  defp clone_workspace_with_git_worktree(base_workspace, planner_workspace) do
+    script =
+      [
+        "set -eu",
+        "base_workspace=#{shell_escape(base_workspace)}",
+        "planner_workspace=#{shell_escape(planner_workspace)}",
+        "if [ -e \"$planner_workspace\" ]; then",
+        "  git -C \"$base_workspace\" worktree remove --force \"$planner_workspace\" >/dev/null 2>&1 || rm -rf \"$planner_workspace\"",
+        "fi",
+        "git -C \"$base_workspace\" worktree prune",
+        "git -C \"$base_workspace\" worktree add --force --detach \"$planner_workspace\" HEAD"
+      ]
+      |> Enum.join("\n")
+
+    case System.cmd("sh", ["-lc", script], stderr_to_stdout: true) do
+      {_output, 0} -> :ok
+      {output, status} -> {:error, {:workspace_clone_failed, :local, status, output}}
+    end
+  end
+
+  defp remove_ephemeral_local_workspace(workspace) do
+    script =
+      [
+        "set -eu",
+        "workspace=#{shell_escape(workspace)}",
+        "if [ -f \"$workspace/.git\" ] && git -C \"$workspace\" rev-parse --is-inside-work-tree >/dev/null 2>&1; then",
+        "  git -C \"$workspace\" worktree remove --force \"$workspace\" >/dev/null 2>&1 || rm -rf \"$workspace\"",
+        "else",
+        "  rm -rf \"$workspace\"",
+        "fi"
+      ]
+      |> Enum.join("\n")
+
+    case System.cmd("sh", ["-lc", script], stderr_to_stdout: true) do
+      {_output, 0} -> {:ok, []}
+      {output, status} -> {:error, {:workspace_remove_failed, :local, status, output}, ""}
+    end
   end
 
   defp worker_host_for_log(nil), do: "local"

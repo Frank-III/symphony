@@ -203,6 +203,24 @@ defmodule SymphonyElixir.Orchestrator do
 
   def handle_info({:codex_worker_update, _issue_id, _update}, state), do: {:noreply, state}
 
+  def handle_info({:worker_runtime_update, issue_id, %{runtime_metadata: metadata}}, %{running: running} = state)
+      when is_binary(issue_id) and is_map(metadata) do
+    case Map.get(running, issue_id) do
+      nil ->
+        {:noreply, state}
+
+      running_entry ->
+        {updated_entry, token_delta} = integrate_runtime_update(running_entry, metadata)
+
+        state = apply_codex_token_delta(state, token_delta)
+
+        notify_dashboard()
+        {:noreply, %{state | running: Map.put(running, issue_id, updated_entry)}}
+    end
+  end
+
+  def handle_info({:worker_runtime_update, _issue_id, _update}, state), do: {:noreply, state}
+
   def handle_info({:retry_issue, issue_id, retry_token}, state) do
     result =
       case pop_retry_attempt_state(state, issue_id, retry_token) do
@@ -691,15 +709,21 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp spawn_issue_on_worker_host(%State{} = state, issue, attempt, recipient, worker_host) do
+    resolved_profile = resolve_runtime_profile_for_dispatch()
+
+    runner_opts =
+      [attempt: attempt, worker_host: worker_host]
+      |> maybe_add_runtime_profile(resolved_profile)
+
     case Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
-           AgentRunner.run(issue, recipient, attempt: attempt, worker_host: worker_host)
+           AgentRunner.run(issue, recipient, runner_opts)
          end) do
       {:ok, pid} ->
         ref = Process.monitor(pid)
 
         Logger.info("Dispatching issue to agent: #{issue_context(issue)} pid=#{inspect(pid)} attempt=#{inspect(attempt)} worker_host=#{worker_host || "local"}")
 
-        runtime_info = resolve_runtime_info_for_dispatch()
+        runtime_info = runtime_info_from_resolved(resolved_profile)
 
         running =
           Map.put(state.running, issue.id, %{
@@ -946,19 +970,27 @@ defmodule SymphonyElixir.Orchestrator do
   defp normalize_retry_attempt(attempt) when is_integer(attempt) and attempt > 0, do: attempt
   defp normalize_retry_attempt(_attempt), do: 0
 
-  defp resolve_runtime_info_for_dispatch do
+  defp resolve_runtime_profile_for_dispatch do
     case SymphonyElixir.Runtime.Registry.resolve_for_role(:worker) do
-      {:ok, resolved} ->
-        %{
-          profile_name: resolved.config.name,
-          provider: resolved.config.provider,
-          adapter: resolved.config.adapter
-        }
-
-      {:error, _} ->
-        %{profile_name: "codex", provider: "codex", adapter: "direct"}
+      {:ok, resolved} -> {:ok, resolved}
+      {:error, _} -> :fallback
     end
   end
+
+  defp runtime_info_from_resolved({:ok, resolved}) do
+    %{
+      profile_name: resolved.config.name,
+      provider: resolved.config.provider,
+      adapter: resolved.config.adapter
+    }
+  end
+
+  defp runtime_info_from_resolved(:fallback) do
+    %{profile_name: "codex", provider: "codex", adapter: "direct"}
+  end
+
+  defp maybe_add_runtime_profile(opts, {:ok, profile}), do: Keyword.put(opts, :runtime_profile, profile)
+  defp maybe_add_runtime_profile(opts, :fallback), do: opts
 
   defp next_retry_attempt_from_running(running_entry) do
     case Map.get(running_entry, :retry_attempt) do
@@ -987,6 +1019,33 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp maybe_put_runtime_value(running_entry, key, value) when is_map(running_entry) do
     Map.put(running_entry, key, value)
+  end
+
+  defp integrate_runtime_update(running_entry, metadata) do
+    prev_input = Map.get(running_entry, :codex_input_tokens, 0)
+    prev_output = Map.get(running_entry, :codex_output_tokens, 0)
+    prev_total = Map.get(running_entry, :codex_total_tokens, 0)
+
+    new_input = Map.get(metadata, :input_tokens, 0)
+    new_output = Map.get(metadata, :output_tokens, 0)
+    new_total = Map.get(metadata, :total_tokens, 0)
+
+    token_delta = %{
+      input_tokens: max(new_input - prev_input, 0),
+      output_tokens: max(new_output - prev_output, 0),
+      total_tokens: max(new_total - prev_total, 0)
+    }
+
+    updated_entry =
+      running_entry
+      |> maybe_put_runtime_value(:session_id, metadata[:session_id])
+      |> maybe_put_runtime_value(:turn_count, metadata[:turn_count])
+      |> maybe_put_runtime_value(:last_codex_event, metadata[:last_event])
+      |> Map.put(:codex_input_tokens, new_input)
+      |> Map.put(:codex_output_tokens, new_output)
+      |> Map.put(:codex_total_tokens, new_total)
+
+    {updated_entry, token_delta}
   end
 
   defp select_worker_host(%State{} = state, preferred_worker_host) do
@@ -1141,7 +1200,10 @@ defmodule SymphonyElixir.Orchestrator do
           last_codex_timestamp: metadata.last_codex_timestamp,
           last_codex_message: metadata.last_codex_message,
           last_codex_event: metadata.last_codex_event,
-          runtime_seconds: running_seconds(metadata.started_at, now)
+          runtime_seconds: running_seconds(metadata.started_at, now),
+          runtime_profile: Map.get(metadata, :runtime_profile, "codex"),
+          runtime_provider: Map.get(metadata, :runtime_provider, "codex"),
+          runtime_adapter: Map.get(metadata, :runtime_adapter, "direct")
         }
       end)
 
