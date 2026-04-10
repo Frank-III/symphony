@@ -126,8 +126,13 @@ defmodule SymphonyElixir.Config.Schema do
 
     alias SymphonyElixir.Config.Schema
 
+    @orchestration_modes ["single", "planner_worker_judge", "brainstorm_arbiter_worker_judge"]
+
     @primary_key false
     embedded_schema do
+      field(:orchestration_mode, :string, default: "single")
+      field(:plan_review_required, :boolean, default: false)
+      field(:brainstorm_planners, :integer, default: 2)
       field(:max_concurrent_agents, :integer, default: 10)
       field(:max_turns, :integer, default: 20)
       field(:max_retry_backoff_ms, :integer, default: 300_000)
@@ -139,9 +144,19 @@ defmodule SymphonyElixir.Config.Schema do
       schema
       |> cast(
         attrs,
-        [:max_concurrent_agents, :max_turns, :max_retry_backoff_ms, :max_concurrent_agents_by_state],
+        [
+          :orchestration_mode,
+          :plan_review_required,
+          :brainstorm_planners,
+          :max_concurrent_agents,
+          :max_turns,
+          :max_retry_backoff_ms,
+          :max_concurrent_agents_by_state
+        ],
         empty_values: []
       )
+      |> validate_inclusion(:orchestration_mode, @orchestration_modes)
+      |> validate_number(:brainstorm_planners, greater_than: 0)
       |> validate_number(:max_concurrent_agents, greater_than: 0)
       |> validate_number(:max_turns, greater_than: 0)
       |> validate_number(:max_retry_backoff_ms, greater_than: 0)
@@ -330,6 +345,7 @@ defmodule SymphonyElixir.Config.Schema do
     embeds_one(:server, Server, on_replace: :update, defaults_to_struct: true)
     field(:runtimes, :map, default: %{})
     field(:planner_runtime, :string)
+    field(:planner_runtimes, {:array, :string}, default: [])
     field(:worker_runtime, :string)
     field(:judge_runtime, :string)
   end
@@ -414,7 +430,11 @@ defmodule SymphonyElixir.Config.Schema do
 
   defp changeset(attrs) do
     %__MODULE__{}
-    |> cast(attrs, [:runtimes, :planner_runtime, :worker_runtime, :judge_runtime], empty_values: [])
+    |> cast(
+      attrs,
+      [:runtimes, :planner_runtime, :planner_runtimes, :worker_runtime, :judge_runtime],
+      empty_values: []
+    )
     |> cast_embed(:tracker, with: &Tracker.changeset/2)
     |> cast_embed(:polling, with: &Polling.changeset/2)
     |> cast_embed(:workspace, with: &Workspace.changeset/2)
@@ -425,6 +445,7 @@ defmodule SymphonyElixir.Config.Schema do
     |> cast_embed(:observability, with: &Observability.changeset/2)
     |> cast_embed(:server, with: &Server.changeset/2)
     |> validate_runtime_profiles()
+    |> update_change(:planner_runtimes, &normalize_runtime_names/1)
     |> validate_runtime_role_references()
   end
 
@@ -641,12 +662,18 @@ defmodule SymphonyElixir.Config.Schema do
   def parse_runtime_profiles(_), do: {:ok, %{}}
 
   @spec resolve_role_runtime(t(), atom()) :: String.t() | nil
-  def resolve_role_runtime(settings, role) when role in [:planner, :worker, :judge] do
+  def resolve_role_runtime(settings, role) when role in [:planner, :arbiter, :worker, :judge] do
     case role do
       :planner -> settings.planner_runtime
+      :arbiter -> settings.planner_runtime || List.first(settings.planner_runtimes)
       :worker -> settings.worker_runtime
       :judge -> settings.judge_runtime
     end
+  end
+
+  @spec resolve_planner_runtimes(t()) :: [String.t()]
+  def resolve_planner_runtimes(settings) do
+    normalize_runtime_names(settings.planner_runtimes)
   end
 
   @spec runtime_profile(t(), String.t()) :: {:ok, RuntimeProfile.t()} | {:error, :not_found}
@@ -696,6 +723,7 @@ defmodule SymphonyElixir.Config.Schema do
 
     changeset
     |> validate_role_ref(:planner_runtime, runtimes)
+    |> validate_runtime_name_list(:planner_runtimes, runtimes)
     |> validate_role_ref(:worker_runtime, runtimes)
     |> validate_role_ref(:judge_runtime, runtimes)
   end
@@ -716,6 +744,45 @@ defmodule SymphonyElixir.Config.Schema do
         changeset
     end
   end
+
+  defp validate_runtime_name_list(changeset, field, runtimes) do
+    case get_change(changeset, field) do
+      nil ->
+        changeset
+
+      names when is_list(names) ->
+        undefined_names =
+          Enum.reject(names, fn
+            name when is_binary(name) -> Map.has_key?(runtimes, name)
+            _ -> false
+          end)
+
+        if undefined_names == [] do
+          changeset
+        else
+          add_error(changeset, field, "references undefined runtimes: #{Enum.join(undefined_names, ", ")}")
+        end
+
+      _ ->
+        changeset
+    end
+  end
+
+  defp normalize_runtime_names(runtimes) when is_list(runtimes) do
+    runtimes
+    |> Enum.flat_map(fn
+      runtime when is_binary(runtime) ->
+        case String.trim(runtime) do
+          "" -> []
+          trimmed -> [trimmed]
+        end
+
+      _other ->
+        []
+    end)
+  end
+
+  defp normalize_runtime_names(_runtimes), do: []
 
   defp format_errors(changeset) do
     changeset

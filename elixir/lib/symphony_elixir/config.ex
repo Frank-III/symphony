@@ -26,6 +26,9 @@ defmodule SymphonyElixir.Config do
           turn_sandbox_policy: map()
         }
 
+  @type agent_role :: :planner | :arbiter | :worker | :judge
+  @type agent_runtime :: String.t()
+
   @spec settings() :: {:ok, Schema.t()} | {:error, term()}
   def settings do
     case Workflow.current() do
@@ -60,6 +63,86 @@ defmodule SymphonyElixir.Config do
   end
 
   def max_concurrent_agents_for_state(_state_name), do: settings!().agent.max_concurrent_agents
+
+  @spec agent_orchestration_mode() :: String.t()
+  def agent_orchestration_mode do
+    settings!().agent.orchestration_mode
+  end
+
+  @spec agent_plan_review_required?() :: boolean()
+  def agent_plan_review_required? do
+    settings!().agent.plan_review_required
+  end
+
+  @spec agent_runtime(agent_role(), keyword()) :: agent_runtime()
+  def agent_runtime(role \\ :worker, opts \\ []) do
+    case Keyword.get(opts, :runtime) do
+      runtime when is_binary(runtime) and runtime != "" ->
+        runtime
+
+      _ ->
+        settings = settings!()
+        default_runtime = Schema.materialize_codex_default_profile(settings).name
+
+        case role do
+          :planner ->
+            settings.planner_runtime ||
+              List.first(Schema.resolve_planner_runtimes(settings)) ||
+              default_runtime
+
+          :arbiter ->
+            settings.planner_runtime ||
+              List.first(Schema.resolve_planner_runtimes(settings)) ||
+              settings.judge_runtime ||
+              settings.worker_runtime ||
+              default_runtime
+
+          :judge ->
+            settings.judge_runtime || settings.worker_runtime || default_runtime
+
+          :worker ->
+            settings.worker_runtime || default_runtime
+        end
+    end
+  end
+
+  @spec brainstorm_planner_runtimes() :: [agent_runtime()]
+  def brainstorm_planner_runtimes do
+    settings = settings!()
+    planner_runtimes = Schema.resolve_planner_runtimes(settings)
+
+    if planner_runtimes == [] do
+      List.duplicate(agent_runtime(:planner), settings.agent.brainstorm_planners)
+    else
+      planner_runtimes
+    end
+  end
+
+  @spec runtime_session_requirements() :: %{agent_runtime() => pos_integer()}
+  def runtime_session_requirements do
+    case agent_orchestration_mode() do
+      "planner_worker_judge" ->
+        [:planner, :worker, :judge]
+        |> Enum.map(&agent_runtime/1)
+        |> count_runtimes()
+
+      "brainstorm_arbiter_worker_judge" ->
+        brainstorm_planner_runtimes()
+        |> Kernel.++([agent_runtime(:arbiter), agent_runtime(:worker), agent_runtime(:judge)])
+        |> count_runtimes()
+
+      _other ->
+        [agent_runtime(:worker)]
+        |> count_runtimes()
+    end
+  end
+
+  @spec configured_runtimes() :: [agent_runtime()]
+  def configured_runtimes do
+    runtime_session_requirements()
+    |> Map.keys()
+    |> Enum.sort()
+  end
 
   @spec codex_turn_sandbox_policy(Path.t() | nil) :: map()
   def codex_turn_sandbox_policy(workspace \\ nil) do
@@ -116,15 +199,21 @@ defmodule SymphonyElixir.Config do
 
   @spec runtime_profile_for_role(atom()) ::
           {:ok, Schema.RuntimeProfile.t()} | {:error, term()}
-  def runtime_profile_for_role(role) when role in [:planner, :worker, :judge] do
+  def runtime_profile_for_role(role) when role in [:planner, :arbiter, :worker, :judge] do
     with {:ok, settings} <- settings() do
-      case Schema.resolve_role_runtime(settings, role) do
+      default_profile = Schema.materialize_codex_default_profile(settings)
+
+      case agent_runtime(role) do
         nil ->
-          {:ok, Schema.materialize_codex_default_profile(settings)}
+          {:ok, default_profile}
+
+        name when map_size(settings.runtimes) == 0 and name == default_profile.name ->
+          {:ok, default_profile}
 
         name ->
           case Schema.runtime_profile(settings, name) do
             {:ok, profile} -> {:ok, profile}
+            {:error, :not_found} when name == default_profile.name -> {:ok, default_profile}
             {:error, :not_found} -> {:error, {:undefined_runtime, name}}
           end
       end
@@ -161,6 +250,12 @@ defmodule SymphonyElixir.Config do
       true ->
         :ok
     end
+  end
+
+  defp count_runtimes(runtimes) when is_list(runtimes) do
+    Enum.reduce(runtimes, %{}, fn runtime, counts ->
+      Map.update(counts, runtime, 1, &(&1 + 1))
+    end)
   end
 
   defp format_config_error(reason) do

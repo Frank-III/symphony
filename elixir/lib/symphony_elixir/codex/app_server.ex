@@ -265,7 +265,7 @@ defmodule SymphonyElixir.Codex.AppServer do
 
     send_message(port, payload)
 
-    with {:ok, _} <- await_response(port, @initialize_id) do
+    with {:ok, _} <- await_response(port, @initialize_id, :initialize) do
       send_message(port, %{"method" => "initialized", "params" => %{}})
       :ok
     end
@@ -312,7 +312,7 @@ defmodule SymphonyElixir.Codex.AppServer do
       }
     })
 
-    case await_response(port, @thread_start_id) do
+    case await_response(port, @thread_start_id, :thread_start) do
       {:ok, %{"thread" => thread_payload}} ->
         case thread_payload do
           %{"id" => thread_id} -> {:ok, thread_id}
@@ -343,7 +343,7 @@ defmodule SymphonyElixir.Codex.AppServer do
       }
     })
 
-    case await_response(port, @turn_start_id) do
+    case await_response(port, @turn_start_id, :turn_start) do
       {:ok, %{"turn" => %{"id" => turn_id}}} -> {:ok, turn_id}
       other -> other
     end
@@ -694,6 +694,28 @@ defmodule SymphonyElixir.Codex.AppServer do
   end
 
   defp maybe_handle_approval_request(
+         port,
+         "mcpServer/elicitation/request",
+         %{"id" => id} = payload,
+         payload_string,
+         on_message,
+         metadata,
+         _tool_executor,
+         _auto_approve_requests
+       ) do
+    send_message(port, %{"id" => id, "result" => %{"action" => "decline"}})
+
+    emit_message(
+      on_message,
+      :elicitation_auto_rejected,
+      %{payload: payload, raw: payload_string, action: "decline"},
+      metadata
+    )
+
+    :approved
+  end
+
+  defp maybe_handle_approval_request(
          _port,
          _method,
          _payload,
@@ -944,31 +966,52 @@ defmodule SymphonyElixir.Codex.AppServer do
     String.starts_with?(normalized_label, "approve") or String.starts_with?(normalized_label, "allow")
   end
 
-  defp await_response(port, request_id) do
-    with_timeout_response(port, request_id, Config.settings!().codex.read_timeout_ms, "")
+  defp await_response(
+         port,
+         request_id,
+         request_name,
+         timeout_ms \\ Config.settings!().codex.read_timeout_ms
+       ) do
+    with_timeout_response(port, request_id, request_name, timeout_ms, "", %{count: 0, last_message: nil})
   end
 
-  defp with_timeout_response(port, request_id, timeout_ms, pending_line) do
+  defp with_timeout_response(port, request_id, request_name, timeout_ms, pending_line, ignored_messages) do
     receive do
       {^port, {:data, {:eol, chunk}}} ->
         complete_line = pending_line <> to_string(chunk)
-        handle_response(port, request_id, complete_line, timeout_ms)
+        handle_response(port, request_id, request_name, complete_line, timeout_ms, ignored_messages)
 
       {^port, {:data, {:noeol, chunk}}} ->
-        with_timeout_response(port, request_id, timeout_ms, pending_line <> to_string(chunk))
+        with_timeout_response(
+          port,
+          request_id,
+          request_name,
+          timeout_ms,
+          pending_line <> to_string(chunk),
+          ignored_messages
+        )
 
       {^port, {:exit_status, status}} ->
         {:error, {:port_exit, status}}
     after
       timeout_ms ->
-        {:error, :response_timeout}
+        {:error,
+         {:response_timeout, request_name, timeout_ms,
+          %{
+            ignored_count: ignored_messages.count,
+            last_message: ignored_messages.last_message
+          }}}
     end
   end
 
-  defp handle_response(port, request_id, data, timeout_ms) do
+  defp handle_response(port, request_id, request_name, data, timeout_ms, ignored_messages) do
     payload = to_string(data)
 
     case Jason.decode(payload) do
+      {:ok, %{"method" => "turn/started", "params" => %{"turn" => %{"id" => turn_id}}}}
+      when request_name == :turn_start and is_binary(turn_id) ->
+        {:ok, %{"turn" => %{"id" => turn_id}}}
+
       {:ok, %{"id" => ^request_id, "error" => error}} ->
         {:error, {:response_error, error}}
 
@@ -980,13 +1023,47 @@ defmodule SymphonyElixir.Codex.AppServer do
 
       {:ok, %{} = other} ->
         Logger.debug("Ignoring message while waiting for response: #{inspect(other)}")
-        with_timeout_response(port, request_id, timeout_ms, "")
+
+        with_timeout_response(
+          port,
+          request_id,
+          request_name,
+          timeout_ms,
+          "",
+          note_ignored_response_message(ignored_messages, other)
+        )
 
       {:error, _} ->
         log_non_json_stream_line(payload, "response stream")
-        with_timeout_response(port, request_id, timeout_ms, "")
+
+        with_timeout_response(
+          port,
+          request_id,
+          request_name,
+          timeout_ms,
+          "",
+          note_ignored_response_message(ignored_messages, payload)
+        )
     end
   end
+
+  defp note_ignored_response_message(ignored_messages, payload) do
+    %{
+      count: Map.get(ignored_messages, :count, 0) + 1,
+      last_message: summarize_ignored_response_message(payload)
+    }
+  end
+
+  defp summarize_ignored_response_message(%{"method" => method}) when is_binary(method), do: method
+  defp summarize_ignored_response_message(%{"id" => id}) when not is_nil(id), do: "response:#{id}"
+
+  defp summarize_ignored_response_message(payload) when is_binary(payload) do
+    payload
+    |> String.trim()
+    |> String.slice(0, 120)
+  end
+
+  defp summarize_ignored_response_message(payload), do: inspect(payload, limit: 20)
 
   defp log_non_json_stream_line(data, stream_label) do
     text =

@@ -23,6 +23,27 @@ defmodule SymphonyElixir.Linear.Adapter do
   }
   """
 
+  @issue_comments_query """
+  query SymphonyIssueComments($issueId: String!) {
+    issue(id: $issueId) {
+      comments(first: 100) {
+        nodes {
+          id
+          body
+        }
+      }
+    }
+  }
+  """
+
+  @update_comment_mutation """
+  mutation SymphonyUpdateComment($commentId: String!, $body: String!) {
+    commentUpdate(id: $commentId, input: {body: $body}) {
+      success
+    }
+  }
+  """
+
   @state_lookup_query """
   query SymphonyResolveStateId($issueId: String!, $stateName: String!) {
     issue(id: $issueId) {
@@ -58,6 +79,17 @@ defmodule SymphonyElixir.Linear.Adapter do
     end
   end
 
+  @spec upsert_comment(String.t(), String.t(), String.t()) :: :ok | {:error, term()}
+  def upsert_comment(issue_id, marker, body)
+      when is_binary(issue_id) and is_binary(marker) and is_binary(body) do
+    with {:ok, comment_id} <- resolve_comment_id(issue_id, marker) do
+      case comment_id do
+        nil -> create_comment(issue_id, body)
+        existing_comment_id -> update_comment(existing_comment_id, body)
+      end
+    end
+  end
+
   @spec update_issue_state(String.t(), String.t()) :: :ok | {:error, term()}
   def update_issue_state(issue_id, state_name)
       when is_binary(issue_id) and is_binary(state_name) do
@@ -75,6 +107,40 @@ defmodule SymphonyElixir.Linear.Adapter do
 
   defp client_module do
     Application.get_env(:symphony_elixir, :linear_client_module, Client)
+  end
+
+  defp resolve_comment_id(issue_id, marker) do
+    with {:ok, response} <- client_module().graphql(@issue_comments_query, %{issueId: issue_id}) do
+      comment_id =
+        response
+        |> get_in(["data", "issue", "comments", "nodes"])
+        |> List.wrap()
+        |> Enum.find_value(fn
+          %{"id" => id, "body" => body} when is_binary(id) and is_binary(body) ->
+            if String.contains?(body, marker), do: id, else: nil
+
+          _other ->
+            nil
+        end)
+
+      {:ok, comment_id}
+    else
+      {:error, reason} -> {:error, reason}
+      _ -> {:error, :comment_lookup_failed}
+    end
+  end
+
+  defp update_comment(comment_id, body)
+       when is_binary(comment_id) and is_binary(body) do
+    with {:ok, response} <-
+           client_module().graphql(@update_comment_mutation, %{commentId: comment_id, body: body}),
+         true <- get_in(response, ["data", "commentUpdate", "success"]) == true do
+      :ok
+    else
+      false -> {:error, :comment_update_failed}
+      {:error, reason} -> {:error, reason}
+      _ -> {:error, :comment_update_failed}
+    end
   end
 
   defp resolve_state_id(issue_id, state_name) do
